@@ -26,20 +26,15 @@ from pydub.playback import play
 from sesameai.generator import Segment, load_csm_1b
 from sesameai.watermarking import CSM_1B_GH_WATERMARK, watermark
 
-from samples import transcript_clips  # Import reference audio samples
+from samples import transcript_clips_small as transcript_clips
 
 # Suppress unnecessary warnings and configure environment
 warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
 os.environ["TOKENIZERS_PARALLELISM"] = "false"  # Disable tokenizer parallelism for better stability
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-logger = logging.getLogger(__name__)
 
+logger = logging.getLogger(__name__)
 
 class TTS:
     """Wrapper class for text-to-speech functionality using SesameAI models."""
@@ -70,7 +65,7 @@ class TTS:
             fd, path = tempfile.mkstemp(suffix=".wav")
             os.close(fd)
             seg.export(path, format="wav")
-            command = ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", path]
+            command = ["ffplay", path, "-nodisp", "-autoexit", "-loglevel", "quiet"]
             subprocess.call(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             os.remove(path)  # Clean up temporary file
             
@@ -78,16 +73,26 @@ class TTS:
 
     def load_model(self) -> None:
         """Load the TTS model and prepare context for generation."""
-        logger.info("Loading SesameAI TTS model...")
+        print("\nLoading SesameAI TTS model...")
         try:
-            model_path = hf_hub_download(repo_id=self.model_repo, filename="ckpt.pt")
-            self.generator = load_csm_1b(model_path, self.device)
-            logger.info("Model loaded successfully!")
+            # Redirect stdout to suppress download messages
+            original_stdout = sys.stdout
+            sys.stdout = open(os.devnull, 'w')
+            
+            try:
+                model_path = hf_hub_download(repo_id=self.model_repo, filename="ckpt.pt")
+                self.generator = load_csm_1b(model_path, self.device)
+            finally:
+                # Restore stdout
+                sys.stdout.close()
+                sys.stdout = original_stdout
+                
+            print("\nModel loaded successfully!")
             
             # Prepare context for generation
             self._prepare_context()
         except Exception as e:
-            logger.error(f"Failed to load model: {e}")
+            print(f"Failed to load model: {e}")
             raise
 
     def _prepare_context(self) -> None:
@@ -95,7 +100,7 @@ class TTS:
         if not self.generator:
             raise ValueError("Model not loaded. Call load_model() first.")
             
-        logger.info("Preparing reference audio context...")
+        print("Preparing reference audio context...")
         segments = [
             Segment(text=text, speaker=1, audio=self._load_audio(audio_path))
             for audio_path, text in transcript_clips.items()
@@ -106,7 +111,7 @@ class TTS:
             tokens, masks = self.generator._tokenize_segment(segment)
             self.cached_context_tokens.append(tokens)
             self.cached_context_masks.append(masks)
-        logger.info("Reference audio context prepared")
+        print("Reference audio context prepared")
 
     def _load_audio(self, audio_path: str) -> torch.Tensor:
         """
@@ -118,8 +123,10 @@ class TTS:
         Returns:
             Preprocessed audio tensor
         """
+        # Normalize path for cross-platform compatibility
+        audio_path = Path(audio_path)
         logger.debug(f"Loading audio: {audio_path}")
-        audio_tensor, sample_rate = torchaudio.load(audio_path)
+        audio_tensor, sample_rate = torchaudio.load(str(audio_path))
 
         # Convert stereo to mono if necessary
         if audio_tensor.shape[0] > 1:
@@ -244,8 +251,6 @@ class TTS:
         Returns:
             AudioSegment with the generated audio
         """
-        logger.info(f"> Generating audio for: {prompt}")
-        start_time = time.time()
         
         # Generate raw audio
         audio = self.generate_with_context(prompt, speaker=1, max_audio_length_ms=10000)
@@ -255,9 +260,6 @@ class TTS:
         if audio.dim() > 1:
             audio = audio.squeeze()
         audio = audio / max(audio.abs().max(), 1e-6)
-
-        elapsed_time = time.time() - start_time
-        logger.info(f"... Generated in {elapsed_time:.2f} seconds")
 
         # Convert to 16-bit PCM
         audio_np = (audio.cpu().numpy() * 32767).astype("int16")
@@ -275,6 +277,9 @@ class TTS:
         audio_segment = audio_segment.fade_in(fade_duration).fade_out(fade_duration)
 
         return audio_segment
+
+    def _generate_audio_segment_wrapper(self, sentence, fade_duration, start_silence_duration, end_silence_duration):
+        return self.generate_audio_segment(sentence, fade_duration, start_silence_duration, end_silence_duration)
 
     def say(
         self, 
@@ -300,33 +305,44 @@ class TTS:
         text = textwrap.dedent(text).strip()
         sentences = [s for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
         if not sentences:
-            logger.warning("No valid text to process")
+            print("No valid text to process")
             return
 
-        # Process each sentence and collect audio segments
-        executor = ProcessPoolExecutor(max_workers=1)
         segments = []
-
+        
+        # Import threading for parallel playback
+        import threading
+        
         for sentence in sentences:
-            print(f"> {sentence}", end='')
             try:
                 start_time = time.time()
+                print(f"> {sentence} ... ", end='', flush=True)
+                
+                # Generate audio segment
                 seg = self.generate_audio_segment(
                     sentence, 
                     fade_duration=fade_duration, 
                     start_silence_duration=start_silence_duration, 
                     end_silence_duration=end_silence_duration
                 )
+                
+                elapsed_time = time.time() - start_time
+                print(f"[{elapsed_time:.2f} seconds]")
+                segments.append(seg)
+                
+                # Play audio in a separate thread so it doesn't block the next generation
+                audio_thread = threading.Thread(target=play, args=(seg,))
+                audio_thread.daemon = True  # Allow program to exit even if thread is still running
+                audio_thread.start()
+                
+            except KeyboardInterrupt:
+                print("\nExiting due to KeyboardInterrupt")
+                return
             except Exception as e:
-                logger.error(f"Error generating audio for sentence: {sentence}: {e}")
+                print(f"Error generating audio for sentence: {sentence}: {e}")
                 seg = AudioSegment.silent(duration=fallback_duration)
                 seg = seg.fade_in(fade_duration).fade_out(fade_duration)
-            elapsed_time = time.time() - start_time
-            print(f"... {elapsed_time:.2f} seconds")
-            segments.append(seg)
-            executor.submit(play, seg)
-
-        executor.shutdown(wait=True)
+                segments.append(seg)
 
         # Export combined audio if requested
         if output_filename and segments:
@@ -334,9 +350,9 @@ class TTS:
             for seg in segments[1:]:
                 combined += seg
             output_path = Path(output_filename)
-            logger.info(f"Exporting combined audio to {output_path.absolute()}...")
+            logger.debug(f"\nExporting combined audio to {output_path.absolute()}...")
             combined.export(output_filename, format="wav")
-            logger.info(f"Export complete: {len(combined) / 1000:.2f} seconds of audio")
+            print(f"Export complete: {len(combined) / 1000:.2f} seconds of audio")
 
     def export_wav(
         self, 
@@ -366,15 +382,15 @@ class TTS:
             seg = None
             while retries <= max_retries:
                 try:
-                    logger.info(f"Export: Generating audio for sentence: {sentence} (Attempt {retries + 1})")
+                    print(f"Export: Generating audio for sentence: {sentence} (Attempt {retries + 1})")
                     seg = self.generate_audio_segment(sentence)
                     break
                 except Exception as e:
                     retries += 1
-                    logger.error(f"Export: Error for sentence: {sentence} (Attempt {retries}): {e}")
+                    print(f"Export: Error for sentence: {sentence} (Attempt {retries}): {e}")
             
             if seg is None:
-                logger.warning(f"Export: Using fallback for sentence: {sentence}")
+                print(f"Export: Using fallback for sentence: {sentence}")
                 seg = AudioSegment.silent(duration=fallback_duration)
             segments.append(seg)
 
@@ -383,11 +399,11 @@ class TTS:
             combined = segments[0]
             for seg in segments[1:]:
                 combined += seg
-            logger.info(f"Exporting to {output_filename}...")
+            print(f"Exporting to {output_filename}...")
             combined.export(output_filename, format="wav")
-            logger.info(f"Export complete: {len(combined) / 1000:.2f} seconds of audio")
+            print(f"Export complete: {len(combined) / 1000:.2f} seconds of audio")
         else:
-            logger.warning("No audio segments to export")
+            print("No audio segments to export")
 
 
 def main():
@@ -402,19 +418,19 @@ def main():
         
         while True:
             try:
-                user_input = input("\nEnter text to generate audio (or press Ctrl+C to exit): ")
+                user_input = input("\nEnter text (or press Ctrl+C to exit): ")
                 if user_input.strip():
                     tts.say(user_input)
                 else:
                     print("Please enter some text to generate audio.")
             except Exception as e:
-                logger.error(f"Error processing input: {e}")
+                print(f"Error processing input: {e}")
                 
     except KeyboardInterrupt:
         print("\nExiting...")
         sys.exit(0)
     except Exception as e:
-        logger.error(f"Fatal error: {e}")
+        print(f"Fatal error: {e}")
         sys.exit(1)
 
 

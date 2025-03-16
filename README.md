@@ -23,20 +23,33 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
+### Windows hacks - You can skipp this for Linux
+On Windows, you need to install specific versions of `torch` and `torchaudio` that match your CUDA version. Also need this custom build of triton due to windows bugs.
+
+```bash
+pip install triton-windows
+pip install torch==2.4.0+cu121 torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu121
+pip install https://huggingface.co/madbuda/triton-windows-builds/resolve/main/triton-3.0.0-cp311-cp311-win_amd64.whl
+```
+
+### Download FFmpeg
+Go to FFmpeg.org or directly to gyan.dev for a Windows build
+Download the "FFmpeg Full" or "FFmpeg Essentials" build
+- Add the bin folder to your path.
+
+
 ### Installing Requirements
-Once the virtual environment is activated, you can install the required packages using the `requirements.txt` file:
+Install the required packages using the `requirements.txt` file:
 
 ```bash
 pip install -r requirements.txt
 ```
 
 ## Running the Script
-To run the `runme.py` script, use the following command:
-
 ```bash
 python runme.py
 ```
 
 ## Notes
 - Input will be split based on sentences and play them as they are generated.
-- A final output for every prompt is always available as `combined_output.wav` and gets overwritten for every prompt.
+- A final output for every prompt is always available as `combined_output.wav` and it gets OVERWRITTEN for every prompt. (grab it if u wanna keep it)
