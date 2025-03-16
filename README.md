@@ -23,12 +23,11 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-### Windows hacks - You can skipp this for Linux
+### Windows installs to get Torch/Triton working properly - You can skip this for Linux IIRC
 On Windows, you need to install specific versions of `torch` and `torchaudio` that match your CUDA version. Also need this custom build of triton due to windows bugs.
 
 ```bash
-pip install triton-windows
-pip install torch==2.4.0+cu121 torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu121
+pip install torch==2.4.0+cu121 torchvision torchaudio torchtune --extra-index-url https://download.pytorch.org/whl/cu121
 pip install https://huggingface.co/madbuda/triton-windows-builds/resolve/main/triton-3.0.0-cp311-cp311-win_amd64.whl
 ```
 
