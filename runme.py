@@ -14,19 +14,17 @@ import tempfile
 import textwrap
 import time
 import warnings
-from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Optional
 
 import torch
 import torchaudio
-from huggingface_hub import hf_hub_download
 from pydub import AudioSegment
 from pydub.playback import play
 from sesameai.generator import Segment, load_csm_1b
 from sesameai.watermarking import CSM_1B_GH_WATERMARK, watermark
 
-from samples import transcript_clips_small
+from samples import transcript_clips
 
 # Suppress unnecessary warnings and configure environment
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -80,8 +78,8 @@ class TTS:
             sys.stdout = open(os.devnull, 'w')
             
             try:
-                model_path = hf_hub_download(repo_id=self.model_repo, filename="ckpt.pt")
-                self.generator = load_csm_1b(model_path, self.device)
+                self.generator = load_csm_1b(self.device)
+                self.generator._model = torch.compile(self.generator._model)
             finally:
                 # Restore stdout
                 sys.stdout.close()
