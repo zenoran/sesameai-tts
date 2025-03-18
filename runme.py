@@ -14,25 +14,24 @@ import tempfile
 import textwrap
 import time
 import warnings
-from pathlib import Path
-from typing import Optional
-
 import torch
 import torchaudio
+from pathlib import Path
+from typing import Optional
 from pydub import AudioSegment
 from pydub.playback import play
 from sesameai.generator import Segment, load_csm_1b
 from sesameai.watermarking import CSM_1B_GH_WATERMARK, watermark
+from samples import voice1
 
-from samples import transcript_clips
 
 # Suppress unnecessary warnings and configure environment
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 os.environ["TOKENIZERS_PARALLELISM"] = "false"  # Disable tokenizer parallelism for better stability
 
-
 logger = logging.getLogger(__name__)
+# logger.setLevel(logging.DEBUG)
 
 class TTS:
     """Wrapper class for text-to-speech functionality using SesameAI models."""
@@ -79,7 +78,6 @@ class TTS:
             
             try:
                 self.generator = load_csm_1b(self.device)
-                self.generator._model = torch.compile(self.generator._model)
             finally:
                 # Restore stdout
                 sys.stdout.close()
@@ -101,7 +99,7 @@ class TTS:
         print("Preparing reference audio context...")
         segments = [
             Segment(text=text, speaker=1, audio=self._load_audio(audio_path))
-            for audio_path, text in transcript_clips.items()
+            for audio_path, text in voice1.items()
         ]
         
         # Cache tokenized representations for fixed context segments
@@ -323,9 +321,13 @@ class TTS:
                     start_silence_duration=start_silence_duration, 
                     end_silence_duration=end_silence_duration
                 )
-                
-                elapsed_time = time.time() - start_time
-                print(f"[{elapsed_time:.2f} seconds]")
+                end_time = time.time()
+                # Compute metrics
+                duration = seg.duration_seconds
+                proc_time = end_time - start_time
+                rtt_ratio = proc_time / duration
+                rtf = 1 / rtt_ratio
+                print(f"[Audio: {duration:.2f}s in {proc_time:.2f}s, RTF: {rtf:.2f}x]")
                 segments.append(seg)
                 
                 # Play audio in a separate thread so it doesn't block the next generation
@@ -410,10 +412,11 @@ def main():
     
     try:
         tts.load_model()
+        warmup = tts.generate_audio_segment("All warmed up baby!")
+        play(warmup)
         
         print("\nSesameAI TTS System")
         print("====================")
-        
         while True:
             try:
                 user_input = input("\nEnter text (or press Ctrl+C to exit): ")

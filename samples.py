@@ -3,15 +3,15 @@ from pathlib import Path
 # Base directory for audio files
 AUDIO_DIR = Path("wav")
 
-# Create cross-platform compatible paths
-transcript_clips_small = {
-    str(AUDIO_DIR / "crab-story" / "split" / "wherewasi.wav"): "Alright, where was I?",
-    str(AUDIO_DIR / "crab-story" / "split" / "crimsonsun.wav"): "Ah yes, the crimson sun.",
-    str(AUDIO_DIR / "crab-story" / "split" / "aliens.wav"): "So these aliens had irridecent skin that rippled with every thought.",
-    str(AUDIO_DIR / "crab-story" / "split" / "harmonies.wav"): "And they spoke in harmonies instead of words.",
-}
+# speaker1 = {
+#     str(AUDIO_DIR / "crab-story" / "split" / "wherewasi.wav"): "Alright, where was I?",
+#     str(AUDIO_DIR / "crab-story" / "split" / "crimsonsun.wav"): "Ah yes, the crimson sun.",
+#     str(AUDIO_DIR / "crab-story" / "split" / "aliens.wav"): "So these aliens had irridecent skin that rippled with every thought.",
+#     str(AUDIO_DIR / "crab-story" / "split" / "harmonies.wav"): "And they spoke in harmonies instead of words.",
+# }
 
-transcript_clips = {
+
+voice1 = {
     str(AUDIO_DIR / "crab-story" / "mono_1.wav"): "OK fresh start, how about this... Close your eyes for a second.  Imagine a world made entirely of sand.  Gold and shimmering sand that stretches as far as the eye can see.  In this world, there is a tiny village made of polished shells.  And in that village lives a little sandcrap named Pip.  Pip dreams of exploring the world beyond his village, but everyone tells him its too dangerous.  One day pip finds an old, chipped compass.  He knows that compass holds the key to his adventure. What happens next?  Should we let pip follow his dream?",
     str(AUDIO_DIR / "crab-story" / "mono_2.wav"): "Alright, where was I?  Ah yes, the crimson sun.  So these aliens had irridecent skin that rippled with every thought.  And they spoke in harmonies instead of words.",
     str(AUDIO_DIR / "crab-story" / "mono_3.wav"): "If pip's bouncing off the shell walls with excitement, he probably wouldnt wait for a map or hidden tunnels.  hehehehe.  Hed probably grap that compass, yell Cya! to the other crabs and scurry out into the sand dunes as fast as his little legs could carry him.  ",

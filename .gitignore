@@ -2,4 +2,5 @@
 __pycache__
 combined_output.wav
 .vscode
-csm/
+*.wav
+models/
