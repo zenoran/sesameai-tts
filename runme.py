@@ -23,6 +23,7 @@ from pydub.playback import play
 from sesameai.generator import Segment, load_csm_1b
 from sesameai.watermarking import CSM_1B_GH_WATERMARK, watermark
 from samples import voice1
+import numpy as np
 
 
 # Suppress unnecessary warnings and configure environment
@@ -69,26 +70,24 @@ class TTS:
         playback._play_with_ffplay = patched_play_with_ffplay
 
     def load_model(self) -> None:
-        """Load the TTS model and prepare context for generation."""
-        print("\nLoading SesameAI TTS model...")
+        """
+        Load the CSM-1B TTS model and prepare it for inference.
+        This method is called during initialization and doesn't need to be called manually.
+        """
+        print("Loading CSM-1B model...")
         try:
-            # Redirect stdout to suppress download messages
-            original_stdout = sys.stdout
-            sys.stdout = open(os.devnull, 'w')
+            self.generator = load_csm_1b(self.device)
             
-            try:
-                self.generator = load_csm_1b(self.device)
-            finally:
-                # Restore stdout
-                sys.stdout.close()
-                sys.stdout = original_stdout
-                
-            print("\nModel loaded successfully!")
+            # Initialize watermarker
+            from sesameai.watermarking import load_watermarker
+            self.watermarker = load_watermarker(self.device)
             
-            # Prepare context for generation
+            self.cached_context_tokens = []
+            self.cached_context_masks = []
             self._prepare_context()
+            print("Model loaded and ready for use.")
         except Exception as e:
-            print(f"Failed to load model: {e}")
+            print(f"Error loading model: {str(e)}")
             raise
 
     def _prepare_context(self) -> None:
@@ -142,7 +141,7 @@ class TTS:
         self, 
         prompt: str, 
         speaker: int = 1, 
-        max_audio_length_ms: int = 10000, 
+        max_audio_length_ms: int = 30000, 
         temperature: float = 0.9, 
         topk: int = 50
     ) -> torch.Tensor:
@@ -220,7 +219,7 @@ class TTS:
 
             # Apply watermarking
             audio, wm_sample_rate = watermark(
-                self.generator._watermarker, audio, self.generator.sample_rate, CSM_1B_GH_WATERMARK
+                self.watermarker, audio, self.generator.sample_rate, CSM_1B_GH_WATERMARK
             )
             audio = torchaudio.functional.resample(
                 audio, orig_freq=wm_sample_rate, new_freq=self.generator.sample_rate
@@ -249,7 +248,7 @@ class TTS:
         """
         
         # Generate raw audio
-        audio = self.generate_with_context(prompt, speaker=1, max_audio_length_ms=10000)
+        audio = self.generate_with_context(prompt, speaker=1, max_audio_length_ms=30000)
 
         # Normalize audio
         audio = audio.to(torch.float32)
@@ -306,10 +305,75 @@ class TTS:
 
         segments = []
         
-        # Import threading for parallel playback
+        # Import threading for parallel processing
         import threading
+        import queue
         
-        for sentence in sentences:
+        # Create a queue for segments to be played
+        segment_queue = queue.Queue()
+        
+        # Flag to signal when to stop the player thread
+        stop_event = threading.Event()
+        
+        # Player thread function
+        def player_thread():
+            while not stop_event.is_set() or not segment_queue.empty():
+                try:
+                    # Wait for a segment with a timeout
+                    seg = segment_queue.get(timeout=0.5)
+                    # Play the segment (blocking)
+                    play(seg)
+                    # Mark task as done
+                    segment_queue.task_done()
+                except queue.Empty:
+                    continue
+        
+        # Start the player thread
+        player = threading.Thread(target=player_thread)
+        player.daemon = True
+        player.start()
+        
+        # Generate and queue the first segment
+        if sentences:
+            try:
+                start_time = time.time()
+                first_sentence = sentences[0]
+                print(f"> {first_sentence} ... ", end='', flush=True)
+                
+                # Generate first audio segment
+                first_seg = self.generate_audio_segment(
+                    first_sentence, 
+                    fade_duration=fade_duration, 
+                    start_silence_duration=start_silence_duration, 
+                    end_silence_duration=end_silence_duration
+                )
+                end_time = time.time()
+                
+                # Compute metrics for first segment
+                duration = first_seg.duration_seconds
+                proc_time = end_time - start_time
+                rtt_ratio = proc_time / duration
+                rtf = 1 / rtt_ratio
+                print(f"[Audio: {duration:.2f}s in {proc_time:.2f}s, RTF: {rtf:.2f}x]")
+                
+                segments.append(first_seg)
+                # Queue the first segment for playback
+                segment_queue.put(first_seg)
+                
+            except KeyboardInterrupt:
+                print("\nExiting due to KeyboardInterrupt")
+                stop_event.set()
+                player.join(timeout=1.0)
+                return
+            except Exception as e:
+                print(f"Error generating audio for sentence: {first_sentence}: {e}")
+                first_seg = AudioSegment.silent(duration=fallback_duration)
+                first_seg = first_seg.fade_in(fade_duration).fade_out(fade_duration)
+                segments.append(first_seg)
+                segment_queue.put(first_seg)
+        
+        # Process remaining sentences
+        for sentence in sentences[1:]:
             try:
                 start_time = time.time()
                 print(f"> {sentence} ... ", end='', flush=True)
@@ -322,28 +386,34 @@ class TTS:
                     end_silence_duration=end_silence_duration
                 )
                 end_time = time.time()
+                
                 # Compute metrics
                 duration = seg.duration_seconds
                 proc_time = end_time - start_time
                 rtt_ratio = proc_time / duration
                 rtf = 1 / rtt_ratio
                 print(f"[Audio: {duration:.2f}s in {proc_time:.2f}s, RTF: {rtf:.2f}x]")
-                segments.append(seg)
                 
-                # Play audio in a separate thread so it doesn't block the next generation
-                audio_thread = threading.Thread(target=play, args=(seg,))
-                audio_thread.daemon = True  # Allow program to exit even if thread is still running
-                audio_thread.start()
+                segments.append(seg)
+                # Queue the segment for playback
+                segment_queue.put(seg)
                 
             except KeyboardInterrupt:
                 print("\nExiting due to KeyboardInterrupt")
-                return
+                break
             except Exception as e:
                 print(f"Error generating audio for sentence: {sentence}: {e}")
                 seg = AudioSegment.silent(duration=fallback_duration)
                 seg = seg.fade_in(fade_duration).fade_out(fade_duration)
                 segments.append(seg)
-
+                segment_queue.put(seg)
+        
+        # Wait for all segments to be played
+        segment_queue.join()
+        # Signal player thread to exit
+        stop_event.set()
+        player.join(timeout=1.0)
+        
         # Export combined audio if requested
         if output_filename and segments:
             combined = segments[0]
@@ -404,6 +474,127 @@ class TTS:
             print(f"Export complete: {len(combined) / 1000:.2f} seconds of audio")
         else:
             print("No audio segments to export")
+            
+    def generate_audio_for_gradio(
+        self, 
+        text: str,
+        fade_duration: int = 50, 
+        start_silence_duration: int = 500, 
+        end_silence_duration: int = 100
+    ) -> tuple:
+        """
+        Generate audio for a given text and return it in a format suitable for Gradio streaming.
+        Returns a tuple containing:
+        1. The sample rate
+        2. The numpy array of audio samples
+        
+        Args:
+            text: Text to synthesize
+            fade_duration: Duration of fade-in and fade-out in milliseconds
+            start_silence_duration: Duration of silence at the beginning in milliseconds
+            end_silence_duration: Duration of silence at the end in milliseconds
+        """
+        # Normalize and split text into sentences
+        text = textwrap.dedent(text).strip()
+        sentences = [s for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+        if not sentences:
+            print("No valid text to process")
+            return None
+            
+        segments = []
+        
+        # Process all sentences
+        for sentence in sentences:
+            try:
+                print(f"Generating audio for: {sentence}")
+                seg = self.generate_audio_segment(
+                    sentence, 
+                    fade_duration=fade_duration, 
+                    start_silence_duration=start_silence_duration, 
+                    end_silence_duration=end_silence_duration
+                )
+                segments.append(seg)
+            except Exception as e:
+                print(f"Error generating audio for sentence: {sentence}: {e}")
+                # Create a short silent segment as fallback
+                seg = AudioSegment.silent(duration=1000)
+                seg = seg.fade_in(fade_duration).fade_out(fade_duration)
+                segments.append(seg)
+        
+        # Combine all segments
+        if segments:
+            combined = segments[0]
+            for seg in segments[1:]:
+                combined += seg
+                
+            # Convert to numpy array for Gradio
+            sample_rate = combined.frame_rate
+            audio_np = np.array(combined.get_array_of_samples())
+            
+            # Normalize to float between -1 and 1
+            audio_np = audio_np / (2**15)
+            
+            return (sample_rate, audio_np)
+        else:
+            # Return empty audio if no segments were generated
+            return (self.generator.sample_rate, np.zeros(0))
+            
+    def stream_audio_for_gradio(
+        self, 
+        text: str,
+        fade_duration: int = 50, 
+        start_silence_duration: int = 500, 
+        end_silence_duration: int = 100
+    ):
+        """
+        Generator function that yields audio segments as they are created.
+        Each yield returns a tuple of (sample_rate, audio_numpy_array).
+        
+        Args:
+            text: Text to synthesize
+            fade_duration: Duration of fade-in and fade-out in milliseconds
+            start_silence_duration: Duration of silence at the beginning in milliseconds
+            end_silence_duration: Duration of silence at the end in milliseconds
+        """
+        # Normalize and split text into sentences
+        text = textwrap.dedent(text).strip()
+        sentences = [s for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+        if not sentences:
+            print("No valid text to process")
+            yield (self.generator.sample_rate, np.zeros(0))
+            return
+        
+        # Process each sentence and yield its audio as it's generated
+        for i, sentence in enumerate(sentences):
+            try:
+                print(f"Streaming audio for: {sentence}")
+                seg = self.generate_audio_segment(
+                    sentence, 
+                    fade_duration=fade_duration, 
+                    start_silence_duration=start_silence_duration if i == 0 else 100,  # Only add longer silence at the beginning
+                    end_silence_duration=end_silence_duration if i == len(sentences)-1 else 100  # Only add longer silence at the end
+                )
+                
+                # Convert to numpy array for Gradio
+                sample_rate = seg.frame_rate
+                audio_np = np.array(seg.get_array_of_samples())
+                
+                # Normalize to float between -1 and 1
+                audio_np = audio_np / (2**15)
+                
+                yield (sample_rate, audio_np)
+                
+            except Exception as e:
+                print(f"Error generating audio for sentence: {sentence}: {e}")
+                # Create a short silent segment as fallback
+                seg = AudioSegment.silent(duration=1000)
+                seg = seg.fade_in(fade_duration).fade_out(fade_duration)
+                
+                sample_rate = seg.frame_rate
+                audio_np = np.array(seg.get_array_of_samples())
+                audio_np = audio_np / (2**15)
+                
+                yield (sample_rate, audio_np)
 
 
 def main():
