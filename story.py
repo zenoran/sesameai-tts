@@ -1,7 +1,12 @@
+import sys
+import os
+
+# Add the ask_llm/src directory to Python path
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ask_llm/src'))
+
 from ask_llm.utils.config import config
 from ask_llm.main import AskLLM
 from runme import TTS
-import sys
 import re
 
 def clean_text_for_tts(text):
@@ -48,7 +53,19 @@ def main():
     You will respond with clear and concise sentences without any formatting.
     Don't use any special characters or quotes, just alphabet characters and punctuation to designate pauses and flowing sentences.
     """
+    
+    # Set HuggingFace model as default
+    huggingface_model = "PygmalionAI/pygmalion-3-12b"  # Or any other model you want to use
+    config.DEFAULT_MODEL = huggingface_model
+    
+    # Add model to HuggingFace models list if not already there
+    if huggingface_model not in config.HUGGINGFACE_MODELS:
+        config.HUGGINGFACE_MODELS.append(huggingface_model)
+    
+    # Initialize with the HuggingFace model
     llm = AskLLM()
+    
+    # Use the original TTS implementation
     tts = TTS(device="cuda")
     tts.load_model()
     warmup = tts.generate_audio_segment("Lets get it started!")
@@ -63,16 +80,20 @@ def main():
     print("Type 'exit' or 'quit' to end the session.")
     
     while True:
-        print("\nWhat's next in your story? (or type 'exit' to quit)")
-        query = input("> ")
-        
-        # Exit if requested
-        if query.lower() in ["exit", "quit"]:
-            print("Exiting storyteller...")
-            break
+        try:
+            print("\nWhat's next in your story? (or type 'exit' to quit)")
+            query = input("> ")
             
-        # Process the query
-        process_query(llm, tts, query)
+            # Exit if requested
+            if query.lower() in ["exit", "quit"]:
+                print("Exiting storyteller...")
+                break
+                
+            # Process the query
+            process_query(llm, tts, query)
+        except (KeyboardInterrupt, EOFError):
+            print("\nExiting storyteller...")
+            break
 
 def process_query(llm, tts, query):
     """Process a single query: get LLM response, clean it, and play audio"""
