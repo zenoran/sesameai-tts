@@ -22,8 +22,9 @@ from pydub import AudioSegment
 from pydub.playback import play
 from sesameai.generator import Segment, load_csm_1b
 from sesameai.watermarking import CSM_1B_GH_WATERMARK, watermark
-from samples import voice1
+import samples
 import numpy as np
+import argparse
 
 
 # Suppress unnecessary warnings and configure environment
@@ -32,28 +33,46 @@ warnings.filterwarnings("ignore", category=UserWarning)
 os.environ["TOKENIZERS_PARALLELISM"] = "false"  # Disable tokenizer parallelism for better stability
 
 logger = logging.getLogger(__name__)
-# logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.DEBUG)
+
+# Identify available voices directly from the imported samples module
+AVAILABLE_VOICES = {
+    name: obj 
+    for name, obj in vars(samples).items() 
+    if not name.startswith("__") and isinstance(obj, dict)
+}
+DEFAULT_VOICE = list(AVAILABLE_VOICES.keys())[0] if AVAILABLE_VOICES else None
 
 class TTS:
     """Wrapper class for text-to-speech functionality using SesameAI models."""
     
-    def __init__(self, device: str = "cuda", model_repo: str = "sesame/csm-1b") -> None:
+    def __init__(self, device: str = "cuda", model_repo: str = "sesame/csm-1b", voice_name: str = DEFAULT_VOICE) -> None:
         """
         Initialize the Text-to-Speech engine.
         
         Args:
             device: Device to run inference on ("cuda" or "cpu")
             model_repo: HuggingFace repository ID for the model
+            voice_name: The name of the voice to use (must correspond to a file in samples/)
         """
         self.device = device
         self.model_repo = model_repo
         self.generator = None
         self.cached_context_tokens = []
         self.cached_context_masks = []
+        self.voice_name = voice_name
+        self.voice_data = self._load_voice_data(voice_name)
         
         # Configure audio playback
         self._patch_audio_playback()
         
+    def _load_voice_data(self, voice_name: str) -> dict:
+        """Load the voice data dictionary for the specified voice name."""
+        if voice_name not in AVAILABLE_VOICES:
+            raise ValueError(f"Voice '{voice_name}' not found. Available voices: {list(AVAILABLE_VOICES.keys())}")
+        logger.info(f"Loading voice data for: {voice_name}")
+        return AVAILABLE_VOICES[voice_name]
+
     def _patch_audio_playback(self) -> None:
         """Patch the audio playback functionality to avoid issues with ffplay."""
         from pydub import playback
@@ -85,7 +104,6 @@ class TTS:
             self.cached_context_tokens = []
             self.cached_context_masks = []
             self._prepare_context()
-            print("Model loaded and ready for use.")
         except Exception as e:
             print(f"Error loading model: {str(e)}")
             raise
@@ -95,10 +113,10 @@ class TTS:
         if not self.generator:
             raise ValueError("Model not loaded. Call load_model() first.")
             
-        print("Preparing reference audio context...")
+        print(f"Preparing reference audio context for voice: {self.voice_name}...")
         segments = [
             Segment(text=text, speaker=1, audio=self._load_audio(audio_path))
-            for audio_path, text in voice1.items()
+            for audio_path, text in self.voice_data.items() # Use loaded voice_data
         ]
         
         # Cache tokenized representations for fixed context segments
@@ -414,7 +432,7 @@ class TTS:
         stop_event.set()
         player.join(timeout=1.0)
         
-        # Export combined audio if requested
+        # Export combined audio if requested and segments were generated
         if output_filename and segments:
             combined = segments[0]
             for seg in segments[1:]:
@@ -423,6 +441,9 @@ class TTS:
             logger.debug(f"\nExporting combined audio to {output_path.absolute()}...")
             combined.export(output_filename, format="wav")
             print(f"Export complete: {len(combined) / 1000:.2f} seconds of audio")
+        elif output_filename and not segments:
+            # Only print this if export was requested but failed
+            print("No audio segments generated to export")
 
     def export_wav(
         self, 
@@ -475,155 +496,47 @@ class TTS:
         else:
             print("No audio segments to export")
             
-    def generate_audio_for_gradio(
-        self, 
-        text: str,
-        fade_duration: int = 50, 
-        start_silence_duration: int = 500, 
-        end_silence_duration: int = 100
-    ) -> tuple:
-        """
-        Generate audio for a given text and return it in a format suitable for Gradio streaming.
-        Returns a tuple containing:
-        1. The sample rate
-        2. The numpy array of audio samples
-        
-        Args:
-            text: Text to synthesize
-            fade_duration: Duration of fade-in and fade-out in milliseconds
-            start_silence_duration: Duration of silence at the beginning in milliseconds
-            end_silence_duration: Duration of silence at the end in milliseconds
-        """
-        # Normalize and split text into sentences
-        text = textwrap.dedent(text).strip()
-        sentences = [s for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
-        if not sentences:
-            print("No valid text to process")
-            return None
-            
-        segments = []
-        
-        # Process all sentences
-        for sentence in sentences:
-            try:
-                print(f"Generating audio for: {sentence}")
-                seg = self.generate_audio_segment(
-                    sentence, 
-                    fade_duration=fade_duration, 
-                    start_silence_duration=start_silence_duration, 
-                    end_silence_duration=end_silence_duration
-                )
-                segments.append(seg)
-            except Exception as e:
-                print(f"Error generating audio for sentence: {sentence}: {e}")
-                # Create a short silent segment as fallback
-                seg = AudioSegment.silent(duration=1000)
-                seg = seg.fade_in(fade_duration).fade_out(fade_duration)
-                segments.append(seg)
-        
-        # Combine all segments
-        if segments:
-            combined = segments[0]
-            for seg in segments[1:]:
-                combined += seg
-                
-            # Convert to numpy array for Gradio
-            sample_rate = combined.frame_rate
-            audio_np = np.array(combined.get_array_of_samples())
-            
-            # Normalize to float between -1 and 1
-            audio_np = audio_np / (2**15)
-            
-            return (sample_rate, audio_np)
-        else:
-            # Return empty audio if no segments were generated
-            return (self.generator.sample_rate, np.zeros(0))
-            
-    def stream_audio_for_gradio(
-        self, 
-        text: str,
-        fade_duration: int = 50, 
-        start_silence_duration: int = 500, 
-        end_silence_duration: int = 100
-    ):
-        """
-        Generator function that yields audio segments as they are created.
-        Each yield returns a tuple of (sample_rate, audio_numpy_array).
-        
-        Args:
-            text: Text to synthesize
-            fade_duration: Duration of fade-in and fade-out in milliseconds
-            start_silence_duration: Duration of silence at the beginning in milliseconds
-            end_silence_duration: Duration of silence at the end in milliseconds
-        """
-        # Normalize and split text into sentences
-        text = textwrap.dedent(text).strip()
-        sentences = [s for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
-        if not sentences:
-            print("No valid text to process")
-            yield (self.generator.sample_rate, np.zeros(0))
-            return
-        
-        # Process each sentence and yield its audio as it's generated
-        for i, sentence in enumerate(sentences):
-            try:
-                print(f"Streaming audio for: {sentence}")
-                seg = self.generate_audio_segment(
-                    sentence, 
-                    fade_duration=fade_duration, 
-                    start_silence_duration=start_silence_duration if i == 0 else 100,  # Only add longer silence at the beginning
-                    end_silence_duration=end_silence_duration if i == len(sentences)-1 else 100  # Only add longer silence at the end
-                )
-                
-                # Convert to numpy array for Gradio
-                sample_rate = seg.frame_rate
-                audio_np = np.array(seg.get_array_of_samples())
-                
-                # Normalize to float between -1 and 1
-                audio_np = audio_np / (2**15)
-                
-                yield (sample_rate, audio_np)
-                
-            except Exception as e:
-                print(f"Error generating audio for sentence: {sentence}: {e}")
-                # Create a short silent segment as fallback
-                seg = AudioSegment.silent(duration=1000)
-                seg = seg.fade_in(fade_duration).fade_out(fade_duration)
-                
-                sample_rate = seg.frame_rate
-                audio_np = np.array(seg.get_array_of_samples())
-                audio_np = audio_np / (2**15)
-                
-                yield (sample_rate, audio_np)
-
 
 def main():
-    """Main entry point for the script."""
-    tts = TTS(device="cuda" if torch.cuda.is_available() else "cpu")
+    parser = argparse.ArgumentParser(description="SesameAI CSM-1B Text-to-Speech")
+    parser.add_argument("-d", "--device", type=str, default="cuda", help="Device to run on (cuda or cpu)")
+    # Update choices dynamically based on discovered voices
+    voice_choices = list(AVAILABLE_VOICES.keys())
+    parser.add_argument("-v", "--voice", type=str, default=DEFAULT_VOICE, 
+                        choices=voice_choices, 
+                        help=f"Voice to use. Available: {voice_choices}")
+    parser.add_argument("text", type=str, nargs='?', help="Text to synthesize (optional, for single utterance)")
+    parser.add_argument("--output", type=str, default="output.wav", help="Output filename for single utterance")
+
+    args = parser.parse_args()
+
+    if not AVAILABLE_VOICES:
+        print("Error: No voice dictionaries found in 'samples.py'.")
+        # Fixed the line below for correct quoting and parenthesis
+        print("Please ensure 'samples.py' contains dictionary definitions (e.g., 'my_voice = {\"path/to/sample.wav\": \"text\"}')")
+        return
+
+    # Non-Web UI execution
+    tts_engine = TTS(device=args.device, voice_name=args.voice)
+    tts_engine.load_model()
     
-    try:
-        tts.load_model()
-        warmup = tts.generate_audio_segment("All warmed up baby!")
-        play(warmup)
-        
-        print("\nSesameAI TTS System")
-        print("====================")
+    if args.text:
+        # Text was provided, export to file
+        tts_engine.export_wav(args.text, args.output)
+    else:
+        # No text provided, default to interactive mode
+        tts_engine.generate_audio_segment("Warming up!")
+        print("No text provided. Entering interactive mode. Type 'exit' or 'quit' to leave.")
         while True:
             try:
-                user_input = input("\nEnter text (or press Ctrl+C to exit): ")
-                if user_input.strip():
-                    tts.say(user_input)
-                else:
-                    print("Please enter some text to generate audio.")
-            except Exception as e:
-                print(f"Error processing input: {e}")
-                
-    except KeyboardInterrupt:
-        print("\nExiting...")
-        sys.exit(0)
-    except Exception as e:
-        print(f"Fatal error: {e}")
-        sys.exit(1)
+                text_to_say = input("> ")
+                if text_to_say.lower() in ['exit', 'quit']:
+                    break
+                if text_to_say.strip():
+                    tts_engine.say(text_to_say, output_filename=None) # Play directly
+            except (EOFError, KeyboardInterrupt):
+                break
+        print("\nExiting interactive mode.")
 
 
 if __name__ == "__main__":
