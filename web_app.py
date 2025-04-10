@@ -103,7 +103,6 @@ class StorytellerApp:
         for i in range(0, len(parts), 3):
             part = parts[i]
             delimiter = parts[i+1] if i + 1 < len(parts) else ""
-            whitespace = parts[i+2] if i + 2 < len(parts) else ""
             
             if part: # Skip empty parts resulting from split
                 current_sentence += part + delimiter
@@ -200,7 +199,6 @@ class StorytellerApp:
         for i in range(0, len(parts), 3):
             part = parts[i]
             delimiter = parts[i+1] if i + 1 < len(parts) else ""
-            whitespace = parts[i+2] if i + 2 < len(parts) else ""
             
             if part: # Skip empty parts resulting from split
                 current_sentence += part + delimiter
@@ -324,9 +322,9 @@ class StorytellerApp:
                  total_sentences_now = len(self.sentences) # Re-check in case more were added
                  is_last_currently = (sentence_index == total_sentences_now - 1)
                  if not is_last_currently:
-                     next_status += f". Generating next..."
+                     next_status += ". Generating next..."
                  else:
-                     next_status += f". Reached end of current list."
+                     next_status += ". Reached end of current list."
                  self.current_status = next_status
                  
             return self.current_status, audio_data # Return status AND audio data

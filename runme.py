@@ -9,7 +9,6 @@ import logging
 import os
 import re
 import subprocess
-import sys
 import tempfile
 import textwrap
 import time
@@ -23,7 +22,6 @@ from pydub.playback import play
 from sesameai.generator import Segment, load_csm_1b
 from sesameai.watermarking import CSM_1B_GH_WATERMARK, watermark
 import samples
-import numpy as np
 import argparse
 
 
