@@ -44,7 +44,10 @@ DEFAULT_VOICE = list(AVAILABLE_VOICES.keys())[0] if AVAILABLE_VOICES else None
 class TTS:
     """Wrapper class for text-to-speech functionality using SesameAI models."""
     
-    def __init__(self, device: str = "cuda", model_repo: str = "sesame/csm-1b", voice_name: str = DEFAULT_VOICE) -> None:
+    voice_name = None
+    voice_data = None
+
+    def __init__(self, device: str = "cuda", model_repo: str = "sesame/csm-1b") -> None:
         """
         Initialize the Text-to-Speech engine.
         
@@ -58,18 +61,10 @@ class TTS:
         self.generator = None
         self.cached_context_tokens = []
         self.cached_context_masks = []
-        self.voice_name = voice_name
-        self.voice_data = self._load_voice_data(voice_name)
         
         # Configure audio playback
         self._patch_audio_playback()
         
-    def _load_voice_data(self, voice_name: str) -> dict:
-        """Load the voice data dictionary for the specified voice name."""
-        if voice_name not in AVAILABLE_VOICES:
-            raise ValueError(f"Voice '{voice_name}' not found. Available voices: {list(AVAILABLE_VOICES.keys())}")
-        logger.info(f"Loading voice data for: {voice_name}")
-        return AVAILABLE_VOICES[voice_name]
 
     def _patch_audio_playback(self) -> None:
         """Patch the audio playback functionality to avoid issues with ffplay."""
@@ -99,12 +94,30 @@ class TTS:
             from sesameai.watermarking import load_watermarker
             self.watermarker = load_watermarker(self.device)
             
-            self.cached_context_tokens = []
-            self.cached_context_masks = []
-            self._prepare_context()
         except Exception as e:
             print(f"Error loading model: {str(e)}")
             raise
+        
+    def list_voices(self) -> list:
+        """List all available voices."""
+        return list(AVAILABLE_VOICES.keys())
+
+    def load_voice(self, voice_name: str) -> None:
+        if voice_name not in AVAILABLE_VOICES:
+            raise ValueError(f"Voice '{voice_name}' not found. Available voices: {list(AVAILABLE_VOICES.keys())}")
+
+        self.cached_context_tokens = []
+        self.cached_context_masks = []
+
+        self.voice_name = voice_name
+        logger.info(f"Loading voice data for: {voice_name}")
+        self.voice_data = AVAILABLE_VOICES[voice_name]
+        logger.debug(f"Loaded voice data: {self.voice_data}")
+
+        self._prepare_context()
+        logger.debug("Warming up...")
+        self.generate_audio_segment("Warming up!")
+
 
     def _prepare_context(self) -> None:
         """Precompute context tokens for faster generation."""
@@ -119,6 +132,7 @@ class TTS:
         
         # Cache tokenized representations for fixed context segments
         for segment in segments:
+            logger.debug(f"Tokenizing segment: {segment.text}")
             tokens, masks = self.generator._tokenize_segment(segment)
             self.cached_context_tokens.append(tokens)
             self.cached_context_masks.append(masks)
@@ -157,7 +171,7 @@ class TTS:
         self, 
         prompt: str, 
         speaker: int = 1, 
-        max_audio_length_ms: int = 30000, 
+        max_audio_length_ms: float = 60_000, 
         temperature: float = 0.9, 
         topk: int = 50
     ) -> torch.Tensor:
@@ -168,8 +182,8 @@ class TTS:
             prompt: Text to synthesize
             speaker: Speaker ID
             max_audio_length_ms: Maximum duration in milliseconds
-            temperature: Sampling temperature (higher = more random)
-            topk: Top-k sampling parameter
+            temperature: Controls how random/creative the responses are (0.1 = very predictable, 1.0 = more creative)
+            topk: How many possible words to consider for each response (lower = more focused, higher = more varied)
             
         Returns:
             Audio tensor
@@ -248,7 +262,9 @@ class TTS:
         prompt: str, 
         fade_duration: int = 50, 
         start_silence_duration: int = 500, 
-        end_silence_duration: int = 100
+        end_silence_duration: int = 100,
+        temperature: float = 0.8,
+        topk: int = 40
     ) -> AudioSegment:
         """
         Generate an AudioSegment from text with proper silence padding and fading.
@@ -258,13 +274,15 @@ class TTS:
             fade_duration: Duration of fade-in and fade-out in milliseconds
             start_silence_duration: Duration of silence at the beginning in milliseconds
             end_silence_duration: Duration of silence at the end in milliseconds
+            temperature: Controls how random/creative the responses are
+            topk: How many possible words to consider for each response
             
         Returns:
             AudioSegment with the generated audio
         """
         
         # Generate raw audio
-        audio = self.generate_with_context(prompt, speaker=1, max_audio_length_ms=30000)
+        audio = self.generate_with_context(prompt, speaker=1, max_audio_length_ms=30_000, temperature=temperature, topk=topk)
 
         # Normalize audio
         audio = audio.to(torch.float32)
@@ -289,8 +307,8 @@ class TTS:
 
         return audio_segment
 
-    def _generate_audio_segment_wrapper(self, sentence, fade_duration, start_silence_duration, end_silence_duration):
-        return self.generate_audio_segment(sentence, fade_duration, start_silence_duration, end_silence_duration)
+    def _generate_audio_segment_wrapper(self, sentence, fade_duration, start_silence_duration, end_silence_duration, temperature=0.8, topk=40):
+        return self.generate_audio_segment(sentence, fade_duration, start_silence_duration, end_silence_duration, temperature, topk)
 
     def say(
         self, 
@@ -299,7 +317,9 @@ class TTS:
         fallback_duration: int = 1000, 
         fade_duration: int = 50, 
         start_silence_duration: int = 500, 
-        end_silence_duration: int = 100
+        end_silence_duration: int = 100,
+        temperature: float = 0.8,
+        topk: int = 40
     ) -> None:
         """
         Generate and play audio for a given text, splitting into sentences for better quality.
@@ -311,6 +331,8 @@ class TTS:
             fade_duration: Duration of fade-in and fade-out in milliseconds
             start_silence_duration: Duration of silence at the beginning in milliseconds
             end_silence_duration: Duration of silence at the end in milliseconds
+            temperature: Controls how random/creative the responses are
+            topk: How many possible words to consider for each response
         """
         # Normalize and split text into sentences
         text = textwrap.dedent(text).strip()
@@ -361,7 +383,9 @@ class TTS:
                     first_sentence, 
                     fade_duration=fade_duration, 
                     start_silence_duration=start_silence_duration, 
-                    end_silence_duration=end_silence_duration
+                    end_silence_duration=end_silence_duration,
+                    temperature=temperature,
+                    topk=topk
                 )
                 end_time = time.time()
                 
@@ -399,7 +423,9 @@ class TTS:
                     sentence, 
                     fade_duration=fade_duration, 
                     start_silence_duration=start_silence_duration, 
-                    end_silence_duration=end_silence_duration
+                    end_silence_duration=end_silence_duration,
+                    temperature=temperature,
+                    topk=topk
                 )
                 end_time = time.time()
                 
@@ -448,7 +474,9 @@ class TTS:
         text: str, 
         output_filename: str, 
         fallback_duration: int = 1000, 
-        max_retries: int = 2
+        max_retries: int = 2,
+        temperature: float = 0.8,
+        topk: int = 40
     ) -> None:
         """
         Generate audio for a text and export it to a WAV file without playing.
@@ -458,6 +486,8 @@ class TTS:
             output_filename: Filename to save the combined audio
             fallback_duration: Duration of silence to use if generation fails
             max_retries: Maximum number of retries if generation fails
+            temperature: Controls how random/creative the responses are
+            topk: How many possible words to consider for each response
         """
         # Split text into sentences
         sentences = [s for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
@@ -472,7 +502,7 @@ class TTS:
             while retries <= max_retries:
                 try:
                     print(f"Export: Generating audio for sentence: {sentence} (Attempt {retries + 1})")
-                    seg = self.generate_audio_segment(sentence)
+                    seg = self.generate_audio_segment(sentence, temperature=temperature, topk=topk)
                     break
                 except Exception as e:
                     retries += 1
@@ -505,6 +535,10 @@ def main():
                         help=f"Voice to use. Available: {voice_choices}")
     parser.add_argument("text", type=str, nargs='?', help="Text to synthesize (optional, for single utterance)")
     parser.add_argument("--output", type=str, default="output.wav", help="Output filename for single utterance")
+    parser.add_argument("--temp", "--temperature", type=float, default=0.8, 
+                        help="Temperature for generation (0.1-1.0, lower=more predictable, higher=more creative)")
+    parser.add_argument("--topk", type=int, default=40,
+                       help="Top-K value for generation (10-100, lower=more focused, higher=more varied)")
 
     args = parser.parse_args()
 
@@ -515,23 +549,24 @@ def main():
         return
 
     # Non-Web UI execution
-    tts_engine = TTS(device=args.device, voice_name=args.voice)
+    tts_engine = TTS(device=args.device)
     tts_engine.load_model()
+    tts_engine.load_voice(args.voice)
+
     
     if args.text:
         # Text was provided, export to file
-        tts_engine.export_wav(args.text, args.output)
+        tts_engine.export_wav(args.text, args.output, temperature=args.temp, topk=args.topk)
     else:
         # No text provided, default to interactive mode
-        tts_engine.generate_audio_segment("Warming up!")
-        print("No text provided. Entering interactive mode. Type 'exit' or 'quit' to leave.")
+        print(f"Interactive mode (temp={args.temp}, topk={args.topk})")
         while True:
             try:
                 text_to_say = input("> ")
                 if text_to_say.lower() in ['exit', 'quit']:
                     break
                 if text_to_say.strip():
-                    tts_engine.say(text_to_say, output_filename=None) # Play directly
+                    tts_engine.say(text_to_say, output_filename=None, temperature=args.temp, topk=args.topk) # Play directly
             except (EOFError, KeyboardInterrupt):
                 break
         print("\nExiting interactive mode.")

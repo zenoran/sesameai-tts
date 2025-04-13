@@ -1,5 +1,6 @@
 import os
 import time
+import sys
 from openai import OpenAI
 
 # Ensure OPENAI_API_KEY is set in your environment variables
@@ -8,8 +9,11 @@ from openai import OpenAI
 # client = OpenAI(api_key="YOUR_API_KEY") 
 client = OpenAI()
 
+if len(sys.argv) != 2:
+    print("Usage: python audio_to_text.py <audio_file_path>")
+    sys.exit(1)
 
-audio_file_path = "melina.mp3" # Keep your audio file path
+audio_file_path = sys.argv[1]
 
 # Check if the file exists
 if not os.path.exists(audio_file_path):
