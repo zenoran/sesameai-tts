@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ask
 
 from ask_llm.utils.config import config
 from ask_llm.main import AskLLM
-from runme import TTS
+from tts_service import TTS
 import re
 
 def clean_text_for_tts(text):

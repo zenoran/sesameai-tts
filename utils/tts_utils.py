@@ -4,6 +4,9 @@ import os
 import numpy as np
 from scipy.io.wavfile import write as write_wav
 import logging
+from tts_service import TTS
+import pydub
+
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +44,7 @@ def clean_text_for_tts(text):
 
     return text.strip()
 
-def generate_tts_audio(text, tts_instance, voice_wav="", language="en", temperature=0.7, top_k=None, top_p=None):
+def generate_tts_audio(text: str, tts_instance: TTS, temperature=0.7, top_k=None):
     """
     Generates TTS audio from text using the provided TTS instance,
     saves it to a temporary WAV file, and returns the file path.
@@ -54,46 +57,31 @@ def generate_tts_audio(text, tts_instance, voice_wav="", language="en", temperat
 
     try:
         logger.info(f"Generating TTS for: '{cleaned_text[:100]}...'")
-        # Assuming tts_instance has a 'generate' method
-        output = tts_instance.generate(
+        # Call the TTS service to get an AudioSegment
+        audio_segment = tts_instance.generate_audio_segment(
             cleaned_text,
-            voice_wav=voice_wav,
-            language=language,
             temperature=temperature,
-            top_k=top_k,
-            top_p=top_p,
+            fade_duration=50, 
+            start_silence_duration=100, 
+            end_silence_duration=100,
         )
-        
-        if output is None or 'audio_wav' not in output or 'sample_rate' not in output:
-             logger.error("TTS generation failed or returned unexpected output format.")
-             return None
 
-        audio_wav = output['audio_wav']
-        sample_rate = output['sample_rate']
+        # Verify we got a valid AudioSegment
+        if audio_segment is None or not isinstance(audio_segment, pydub.AudioSegment):
+            logger.error(f"TTS generation failed or returned unexpected type: {type(audio_segment)}")
+            return None
         
-        if not isinstance(audio_wav, np.ndarray) or audio_wav.size == 0:
-            logger.error("TTS generated empty or non-numpy audio array.")
+        if len(audio_segment) == 0:
+            logger.error("TTS generated empty audio segment.")
             return None
 
-        # Ensure audio data is in int16 format for WAV saving
-        if audio_wav.dtype == np.float32:
-            # Assuming float audio is in range [-1.0, 1.0]
-            audio_wav = (audio_wav * 32767).astype(np.int16)
-        elif audio_wav.dtype != np.int16:
-             logger.warning(f"Unexpected audio dtype: {audio_wav.dtype}. Attempting conversion to int16.")
-             max_val = np.max(np.abs(audio_wav))
-             if max_val > 0:
-                 audio_wav = (audio_wav / max_val * 32767).astype(np.int16)
-             else:
-                 audio_wav = audio_wav.astype(np.int16)
-
         # Create a temporary file to save the audio
-        # Use a context manager for robust temporary file handling
         fd, file_path = tempfile.mkstemp(suffix=".wav")
-        os.close(fd) # Close the file descriptor as write_wav opens the file path
+        os.close(fd)  # Close the file descriptor
         
         try:
-            write_wav(file_path, sample_rate, audio_wav)
+            # Export the AudioSegment directly to WAV
+            audio_segment.export(file_path, format="wav")
             logger.info(f"TTS audio successfully saved to temporary file: {file_path}")
             return file_path
         except Exception as write_e:
@@ -109,7 +97,7 @@ def generate_tts_audio(text, tts_instance, voice_wav="", language="en", temperat
 
     except Exception as e:
         logger.exception(f"Error during TTS generation process: {e}")
-        # Attempt cleanup even if generation fails before writing
+        # Attempt cleanup if file_path was created before the error
         if 'file_path' in locals() and os.path.exists(file_path):
              try:
                  os.remove(file_path)
