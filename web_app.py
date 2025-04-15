@@ -9,90 +9,58 @@ import logging
 import gradio as gr
 import torch
 import numpy as np
-import re
 from ask_llm.utils.config import config
 from ask_llm.main import AskLLM
-from runme import TTS
+from utils.tts_base import TTSBaseApp
 import time
-import threading
 import tempfile
 import os
+import argparse
+from utils.cli_args import setup_common_args_and_config
 
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.WARNING)
 
-def clean_text_for_tts(text):
-    """
-    Clean text to make it suitable for TTS processing by:
-    1. Removing markdown formatting
-    2. Removing special characters
-    3. Converting to plain sentences
-    """
-    text = text.replace("—", "...")
-    text = re.sub(r'```[\s\S]*?```', '', text)
-    text = re.sub(r'`[^`]*`', '', text)
-    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
-    text = re.sub(r'(\*\*|__)(.*?)\1', r'\2', text)
-    text = re.sub(r'(\*|_)(.*?)\1', r'\2', text)
-    text = re.sub(r'<[^>]*>', '', text)
-    text = re.sub(r'[^\w\s.,!?:;\'"-]', '', text)
-    text = re.sub(r'\s+', ' ', text)
-    text = re.sub(r'([.,!?:;-])\1+', r'\1', text)
-    text = re.sub(r'([.,!?:;-])([\w])', r'\1 \2', text)
-    
-    return text.strip()
 
-class StorytellerApp:
+class StorytellerApp(TTSBaseApp):
     def __init__(self):
+        # Initialize the base class first
+        super().__init__(device="cuda" if torch.cuda.is_available() else "cpu")
+        
         # LLM Setup
         config.SYSTEM_MESSAGE = """
         You are a storyteller. You paint vivid images in the reader's mind. You are a master of description and detail.
         Your response will be spoken via a text-to-speech system, so you should only include words to be spoken in your response. Do not use any emojis or annotations. Do not use parentheticals or action lines. Remember to only respond with words to be spoken. Write out and normalize text, rather than using abbreviations, numbers, and so on. For example, $2.35 should be two dollars and thirty-five cents, MPH should be miles per hour, and so on. Mathematical formulae should be written out as a human would speak it. Use only standard English alphabet characters [A-Z] along with basic punctuation. Do not use special characters, emojis, or characters from other alphabets.
         Your response should not use quotes to indicate dialogue. Sentences should be complete and stand alone.
         """
-        huggingface_model = "PygmalionAI/pygmalion-3-12b"  # Or any other model you want to use
-        config.DEFAULT_MODEL = huggingface_model
+        # Use the config's DEFAULT_MODEL instead of hardcoding
+        if config.DEFAULT_MODEL not in config.HUGGINGFACE_MODELS + config.OPENAPI_MODELS + config.OLLAMA_MODELS:
+            if "pygmalion" in config.DEFAULT_MODEL.lower():
+                huggingface_model = "PygmalionAI/pygmalion-3-12b"
+                if huggingface_model not in config.HUGGINGFACE_MODELS:
+                    config.HUGGINGFACE_MODELS.append(huggingface_model)
+                config.DEFAULT_MODEL = huggingface_model
+        
         config.VERBOSE = True
         
-        if huggingface_model not in config.HUGGINGFACE_MODELS:
-            config.HUGGINGFACE_MODELS.append(huggingface_model)
-
         self.llm = AskLLM()
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        default_voice = "melina"
-        self.tts = TTS(device=device)
-        self.tts.load_model()
-        self.tts.load_voice(default_voice)
-
-        self.available_voices = self.tts.list_voices()
-        self.current_voice = default_voice
         
         # State Variables
-        self.sentences = []
         self.current_sentence = ""
         self.current_status = f"Idle. Ready for story or text input. (Voice: {self.current_voice})"
         self.prompt_audio_segments = [] # List of lists: [[seg1, seg2], [seg3], ...]
-        self.current_sample_rate = None
         self.generated_prompt_wav_paths = []
         self.generated_full_story_paths = []
-        
-        self.lock = threading.Lock()
     
-    def change_voice(self, new_voice_name):
-        """Changes the TTS voice and updates status."""
-        print(f"Attempting to change voice to: {new_voice_name}")
-        with self.lock:
-            try:
-                self.tts.load_voice(new_voice_name)
-                self.current_voice = new_voice_name
-                self.current_status = f"Voice changed to {new_voice_name}. Ready."
-                print(f"Successfully changed voice to {new_voice_name}.")
-            except Exception as e:
-                logger.exception(f"Error changing voice to {new_voice_name}: {e}")
-                self.current_status = f"Error changing voice to {new_voice_name}: {e}"
-                print(self.current_status)
-            return self.current_status
+    def _store_audio_segment(self, audio_segment, sentence_index):
+        """Store the generated audio segment in the prompt_audio_segments list structure."""
+        # Append to the *last* list in prompt_audio_segments
+        if self.prompt_audio_segments:
+            self.prompt_audio_segments[-1].append(audio_segment)
+            # print(f"Appended segment to prompt group {len(self.prompt_audio_segments)}. Group size: {len(self.prompt_audio_segments[-1])}")
+        else:
+            print("Warning: prompt_audio_segments is empty, cannot append segment.")
     
     def process_llm_query(self, query, history, is_continuation=False, temperature=0.8, topk=40):
         """Process query, append to history/sentences. If not continuation, clear first."""
@@ -116,30 +84,10 @@ class StorytellerApp:
             self.current_status = error_msg
             yield history, self.current_status, 0, 0, False, None, self.generated_prompt_wav_paths
             return
+        print(f"Response from LLM: {type(self.llm)}")
         
-        cleaned_response = clean_text_for_tts(response)
-        
-        # Split into sentences
-        split_pattern = r"([.!?])(\s+|$)"
-        parts = re.split(split_pattern, cleaned_response)
-        
-        new_sentences_raw = []
-        current_sentence = ""
-        for i in range(0, len(parts), 3):
-            part = parts[i]
-            delimiter = parts[i+1] if i + 1 < len(parts) else ""
-            
-            if part: # Skip empty parts resulting from split
-                current_sentence += part + delimiter
-                if delimiter: # End of a sentence found
-                     if current_sentence.strip():
-                         new_sentences_raw.append(current_sentence.strip())
-                     current_sentence = "" # Reset for next sentence
-            
-        if current_sentence.strip():
-            new_sentences_raw.append(current_sentence.strip())
-            
-        new_sentences = [s for s in new_sentences_raw if s]
+        # Use the base class to split text into sentences
+        new_sentences = self.split_text_into_sentences(response)
         print(f"Split LLM response into {len(new_sentences)} sentences:")
         for idx, sent in enumerate(new_sentences):
             print(f"  {idx+1}: {sent[:80]}{'...' if len(sent) > 80 else ''}")
@@ -214,29 +162,8 @@ class StorytellerApp:
         if not is_continuation:
             self._clear_internal_state()
         
-        cleaned_text = clean_text_for_tts(pasted_text)
-        
-        # Split into sentences using the same logic as for LLM response
-        split_pattern = r"([.!?])(\s+|$)"
-        parts = re.split(split_pattern, cleaned_text)
-        
-        new_sentences_raw = []
-        current_sentence = ""
-        for i in range(0, len(parts), 3):
-            part = parts[i]
-            delimiter = parts[i+1] if i + 1 < len(parts) else ""
-            
-            if part: # Skip empty parts resulting from split
-                current_sentence += part + delimiter
-                if delimiter: # End of a sentence found
-                     if current_sentence.strip():
-                         new_sentences_raw.append(current_sentence.strip())
-                     current_sentence = "" # Reset for next sentence
-            
-        if current_sentence.strip():
-            new_sentences_raw.append(current_sentence.strip())
-            
-        new_sentences = [s for s in new_sentences_raw if s]
+        # Use the base class to split text into sentences
+        new_sentences = self.split_text_into_sentences(pasted_text)
         print(f"Split pasted text into {len(new_sentences)} sentences:")
         for idx, sent in enumerate(new_sentences):
             print(f"  {idx+1}: {sent[:80]}{'...' if len(sent) > 80 else ''}")
@@ -287,83 +214,6 @@ class StorytellerApp:
                     initial_audio_to_send = None
         
         yield self.current_status, start_idx_of_new, end_idx_of_new, True, initial_audio_to_send, self.generated_prompt_wav_paths
-    
-    def generate_audio_for_sentence_index(self, sentence_index, temperature=0.8, topk=40):
-        """Generate audio for a specific sentence index and RETURN data for Gradio."""
-        audio_data = None # Default to None
-        with self.lock:
-            total_sentences = len(self.sentences)
-            if sentence_index >= total_sentences:
-                 status = self.current_status
-                 print(f"generate_audio: Index {sentence_index} out of bounds ({total_sentences}). Status: {status}")
-                 return status, audio_data # Return status and None audio
-            
-            sentence = self.sentences[sentence_index]
-            self.current_sentence = sentence
-            status_update = f"Generating {sentence_index+1}/{total_sentences}: {sentence[:50]}..."
-            self.current_status = status_update
-            
-        try:
-            print(f"Generating audio for sentence {sentence_index+1}/{total_sentences}: {sentence}")
-            start_time = time.time()
-            
-            seg = self.tts.generate_audio_segment(
-                sentence, 
-                fade_duration=50, 
-                start_silence_duration=100, 
-                end_silence_duration=100,
-                temperature=temperature,
-                topk=topk
-            )
-            
-            with self.lock:
-                if self.current_sample_rate is None:
-                    self.current_sample_rate = seg.frame_rate
-                # Append to the *last* list in prompt_audio_segments
-                if self.prompt_audio_segments:
-                    self.prompt_audio_segments[-1].append(seg)
-                    # print(f"Appended segment to prompt group {len(self.prompt_audio_segments)}. Group size: {len(self.prompt_audio_segments[-1])}")
-                else:
-                     print("Warning: prompt_audio_segments is empty, cannot append segment.")
-                
-            raw_samples = seg.get_array_of_samples()
-            audio_np_raw = np.array(raw_samples)
-            
-            # Normalize to float32 between -1.0 and 1.0
-            if audio_np_raw.dtype == np.int16:
-                audio_np = audio_np_raw.astype(np.float32) / 32768.0
-            elif audio_np_raw.dtype != np.float32: # Handle other potential integer types
-                max_val = np.iinfo(audio_np_raw.dtype).max
-                audio_np = audio_np_raw.astype(np.float32) / max_val
-            else: # Already float32
-                audio_np = audio_np_raw
-
-            audio_data = (seg.frame_rate, audio_np)
-            duration = seg.duration_seconds if seg else 0
-            process_time = time.time() - start_time
-            print(f"Generated segment {sentence_index+1}/{total_sentences} ({duration:.2f}s audio in {process_time:.1f}s)")
-            
-            next_status = f"Processed {sentence_index+1}/{total_sentences} " + \
-                         f"({duration:.1f}s audio / {process_time:.1f}s proc)"
-            
-            with self.lock:
-                 total_sentences_now = len(self.sentences) # Re-check in case more were added
-                 is_last_currently = (sentence_index == total_sentences_now - 1)
-                 if not is_last_currently:
-                     next_status += ". Generating next..."
-                 else:
-                     next_status += ". Reached end of current list."
-                 self.current_status = next_status
-                 
-            return self.current_status, audio_data # Return status AND audio data
-                
-        except Exception as e:
-            error_msg = f"Error generating audio for sentence {sentence_index+1}: {e}"
-            print(error_msg)
-            with self.lock:
-                 total_sentences_in_exc = len(self.sentences)
-                 self.current_status = f"Error on sentence {sentence_index+1}/{total_sentences_in_exc}. Skipping."
-            return self.current_status, None # Return error status and None audio
     
     def _clear_internal_state(self):
         """Internal method to clear state without returning UI values."""
@@ -524,6 +374,16 @@ class StorytellerApp:
 
 # --- Gradio UI ---
 def main():
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description="SesameAI Storyteller Web UI")
+    parser.add_argument("-m", "--model", help="Choose the model to use (supports partial matching)")
+    parser.add_argument("-v", "--voice", help="Choose the voice to use for TTS")
+    args = parser.parse_args()
+    
+    # Apply command-line arguments to config using the common function
+    setup_common_args_and_config(args)
+    
+    # IMPORTANT: Initialize app only after processing command-line arguments
     storyteller = StorytellerApp()
 
     with gr.Blocks(title="Storyteller TTS", theme=gr.themes.Soft()) as demo:
@@ -537,7 +397,7 @@ def main():
         with gr.Row():
              voice_selector = gr.Radio(
                  label="Select Voice",
-                 choices=storyteller.available_voices,
+                 choices=storyteller.list_available_voices(),
                  value=storyteller.current_voice,
                  interactive=True,
                  scale=4
