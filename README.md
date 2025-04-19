@@ -46,8 +46,16 @@ pip install -r requirements.txt
 
 ## Running the Script
 ```bash
-python runme.py
+./start.sh
 ```
+
+## Web UI
+After starting the stack with `start.sh`, open your browser and navigate to:
+
+```
+http://localhost:9000/
+```
+You can then press and hold the "Start Recording" button to speak, release to stop, and hear the AI response streamed back.
 
 ## Notes
 - Input will be split based on sentences and play them as they are generated.
