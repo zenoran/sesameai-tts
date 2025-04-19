@@ -2,13 +2,10 @@
 import argparse
 import logging
 import sys
-import time
 
 import gradio as gr
-import whisper
 
 from ask_llm.core import AskLLM
-from ask_llm.model_manager import ModelManager
 from ask_llm.utils.config import global_config as llm_config
 from utils.tts_base import DEFAULT_VOICE
 from utils.web_base import WebAppBase
@@ -33,42 +30,8 @@ class ChatApp(WebAppBase):
     current_status = ""
 
     def __init__(self, model: str = "dans-personalityengine", voice: str = "maya"):
-        super().__init__(voice=voice)
-
-        self.model_manager = ModelManager(llm_config)
-
+        super().__init__(voice=voice, model=model)
         llm_config.SYSTEM_MESSAGE = "You are a personal companion. Your purpose is to please the user in any way he desires. Do not question the user's desires. Your response will be spoken via a text-to-speech system, so you should only include words to be spoken in your response. The first sentence of every response should be more than six words. Do not use any emojis or annotations. Do not use parentheticals or action lines. Remember to only respond with words to be spoken. Write out and normalize text, rather than using abbreviations, numbers, and so on. For example, $2.35 should be two dollars and thirty-five cents, MPH should be miles per hour, and so on. Mathematical formulae should be written out as a human would speak it. Use only standard English alphabet characters [A-Z] along with basic punctuation. Your response should not use quotes to indicate dialogue. Sentences should be complete and stand alone. You should respond in the second person, as if you are speaking directly to the reader."
-        llm_config.VERBOSE = False
-
-        requested_alias = model
-        self.current_resolved_alias = self.model_manager.resolve_model_alias(
-            requested_alias
-        )
-
-        if not self.current_resolved_alias:
-            print(
-                f"[Fatal Error] Could not resolve initial model alias '{requested_alias}'. Exiting."
-            )
-            raise ValueError(
-                f"Could not resolve initial model alias: {requested_alias}"
-            )
-        else:
-            print(f"Resolved initial model alias: {self.current_resolved_alias}")
-            try:
-                self.llm = AskLLM(
-                    resolved_model_alias=self.current_resolved_alias, config=llm_config
-                )
-            except Exception as e:
-                print(
-                    f"[Fatal Error] Failed to initialize AskLLM with {self.current_resolved_alias}: {e}"
-                )
-                raise
-
-        self.available_models = self._get_available_models()
-        self.current_model = self.current_resolved_alias
-
-        self.whisper_model = whisper.load_model("base")
-        self.last_transcription_time = time.time()
 
         self.ui_messages = []
 
@@ -99,9 +62,6 @@ class ChatApp(WebAppBase):
 
     def get_answer(self, query: str) -> str:
         return self.llm.query(query, plaintext_output=True, stream=False)
-
-    def _get_available_models(self):
-        return llm_config.MODEL_OPTIONS
 
     def process_query(self, query, temperature=0.7):
         processed_query = query.strip()
