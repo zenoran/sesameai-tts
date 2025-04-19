@@ -25,30 +25,12 @@ An interactive storytelling application that uses SesameAI's Text-to-Speech mode
 
 ## Usage
 
-### Command Line Interface
-
-Run the CLI version with:
-
-```bash
-python story.py "Tell me a story about a dragon"
-```
-
-Or run it without arguments to enter interactive mode:
-
-```bash
-python story.py
-```
-
-In interactive mode:
-- Type your prompts to continue the story
-- Type 'exit' or 'quit' to end the session
-
 ### Web Interface
 
 Run the web interface with:
 
 ```bash
-python web_app.py
+python web_storyteller.py
 ```
 
 This will launch a Gradio web interface where you can:
@@ -65,4 +47,4 @@ The web interface will be available at http://localhost:7860 by default.
 - Leverages AskLLM for story generation and context maintenance
 - Cleans text to ensure optimal TTS performance
 - Web interface built with Gradio
-- Audio streaming for faster playback 
+- Audio streaming for faster playback (simulated by splitting sentences and adding to WAV in player)
