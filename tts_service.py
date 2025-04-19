@@ -116,7 +116,7 @@ class TTS:
 
         self._prepare_context()
         logger.debug("Warming up...")
-        self.generate_audio_segment("Warming up!")
+        self.generate_audio_segment("I'm getting all warmed up for our chatting to begin.")
 
 
     def _prepare_context(self) -> None:

@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 import gradio as gr
-from ask_llm.utils.config import config
-from ask_llm.main import AskLLM
+from ask_llm.utils.config import global_config as llm_config
+from ask_llm.core import AskLLM
+from ask_llm.model_manager import ModelManager
 import whisper
 import time
 import os
 import torch
-from utils.cli_args import setup_common_args_and_config
-from utils.tts_base import TTSBaseApp
+from utils.tts_base import TTSBaseApp, DEFAULT_VOICE
 import logging
 import argparse
+import sys
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
 
 bubbles_theme = gr.Theme(
     primary_hue="blue",
@@ -21,16 +23,35 @@ bubbles_theme = gr.Theme(
 
 class ChatApp(TTSBaseApp):
     current_status = ""
-    def __init__(self):
-        config.SYSTEM_MESSAGE = "You are a personal companion. Your purpose is to please the user in any way he desires. Do not question the user's desires. Your response will be spoken via a text-to-speech system, so you should only include words to be spoken in your response. The first sentence of every response should be more than six words. Do not use any emojis or annotations. Do not use parentheticals or action lines. Remember to only respond with words to be spoken. Write out and normalize text, rather than using abbreviations, numbers, and so on. For example, $2.35 should be two dollars and thirty-five cents, MPH should be miles per hour, and so on. Mathematical formulae should be written out as a human would speak it. Use only standard English alphabet characters [A-Z] along with basic punctuation. Your response should not use quotes to indicate dialogue. Sentences should be complete and stand alone. You should respond in the second person, as if you are speaking directly to the reader."
-        config.VERBOSE = False
+
+    def __init__(self, model: str = "dans-personalityengine", voice: str = "maya"):
+        self.model_manager = ModelManager(llm_config)
+
+        llm_config.SYSTEM_MESSAGE = "You are a personal companion. Your purpose is to please the user in any way he desires. Do not question the user's desires. Your response will be spoken via a text-to-speech system, so you should only include words to be spoken in your response. The first sentence of every response should be more than six words. Do not use any emojis or annotations. Do not use parentheticals or action lines. Remember to only respond with words to be spoken. Write out and normalize text, rather than using abbreviations, numbers, and so on. For example, $2.35 should be two dollars and thirty-five cents, MPH should be miles per hour, and so on. Mathematical formulae should be written out as a human would speak it. Use only standard English alphabet characters [A-Z] along with basic punctuation. Your response should not use quotes to indicate dialogue. Sentences should be complete and stand alone. You should respond in the second person, as if you are speaking directly to the reader."
+        llm_config.VERBOSE = False
         
-        # Initialize the base class first
-        super().__init__(device="cuda" if torch.cuda.is_available() else "cpu")
         
-        self.llm = AskLLM()
+        requested_alias = model
+        self.current_resolved_alias = self.model_manager.resolve_model_alias(requested_alias)
+
+        if not self.current_resolved_alias:
+            print(f"[Fatal Error] Could not resolve initial model alias '{requested_alias}'. Exiting.")
+            # Handle fatal error - maybe raise exception or exit
+            raise ValueError(f"Could not resolve initial model alias: {requested_alias}")
+        else:
+            print(f"Resolved initial model alias: {self.current_resolved_alias}")
+            try:
+                self.llm = AskLLM(resolved_model_alias=self.current_resolved_alias, config=llm_config)
+            except Exception as e:
+                 print(f"[Fatal Error] Failed to initialize AskLLM with {self.current_resolved_alias}: {e}")
+                 raise # Re-raise exception as this is critical
+
+        # Initialize the Base Class TTS
+        super().__init__(voice=voice)
+
+        # Store available models (raw list from config for dropdown)
         self.available_models = self._get_available_models()
-        self.current_model = config.DEFAULT_MODEL
+        self.current_model = self.current_resolved_alias # Store resolved alias as current model identifier
         
         self.whisper_model = whisper.load_model("base")
         self.last_transcription_time = time.time()
@@ -45,23 +66,31 @@ class ChatApp(TTSBaseApp):
         self.audio_segments = []
 
     def _get_available_models(self):
-        models = []
-        models.extend(config.OPENAPI_MODELS)
-        models.extend(config.HUGGINGFACE_MODELS)
-        models.extend(config.OLLAMA_MODELS)
-        return models
+        # Get available aliases from the computed field in config
+        return llm_config.MODEL_OPTIONS
         
-    def change_model(self, new_model):
-        print(f"Attempting to change model to: {new_model}")
+    def change_model(self, new_model_requested):
+        print(f"Attempting to change model to: {new_model_requested}")
         with self.lock:
+            resolved_new_alias = self.model_manager.resolve_model_alias(new_model_requested)
+            if not resolved_new_alias:
+                error_msg = f"Error: Could not resolve requested model alias '{new_model_requested}'." 
+                print(error_msg)
+                self.current_status = error_msg
+                return self.current_status # Return error status
+
+            print(f"Resolved '{new_model_requested}' to '{resolved_new_alias}'. Initializing...")
             try:
-                config.DEFAULT_MODEL = new_model
-                self.llm = AskLLM()
-                self.current_model = new_model
-                self.current_status = f"Model changed to {new_model}. Ready."
-                print(f"Successfully changed model to {new_model}.")
+                # Initialize with the *new* resolved alias
+                new_llm = AskLLM(resolved_model_alias=resolved_new_alias, config=llm_config)
+                # Only replace if successful
+                self.llm = new_llm
+                self.current_resolved_alias = resolved_new_alias # Update stored resolved alias
+                self.current_model = resolved_new_alias # Update identifier for UI
+                self.current_status = f"Model changed to {resolved_new_alias}. Ready."
+                print(f"Successfully changed model to {resolved_new_alias}.")
             except Exception as e:
-                error_msg = f"Error changing model to {new_model}: {e}"
+                error_msg = f"Error initializing AskLLM for {resolved_new_alias}: {e}"
                 print(error_msg)
                 self.current_status = error_msg
             return self.current_status
@@ -70,6 +99,16 @@ class ChatApp(TTSBaseApp):
         """Store the generated audio segment in the audio_segments list."""
         self.audio_segments.append(audio_segment)
     
+    def interrupt_and_reset(self):
+        """Interrupts ongoing TTS generation and resets sentence state."""
+        logger.info("Interrupting any ongoing TTS generation.")
+        with self.lock:
+            self.sentences = []
+            self.audio_segments = []
+        # Yield False for processing_active to stop the loop
+        # Yield None for audio_output to potentially clear the player
+        return "Interrupted previous response.", False, None
+
     def process_query(self, query, temperature=0.7):
         """Process the query, get response from LLM, and prepare for sentence processing"""
         processed_query = query.strip() 
@@ -88,10 +127,10 @@ class ChatApp(TTSBaseApp):
         yield self.ui_messages, f"Processing query with {self.current_model}...", 0, 0, False, None
         
         try:
-            config.TEMPERATURE = temperature
+            llm_config.TEMPERATURE = temperature
             
             # Get response from LLM
-            response = self.llm.query(processed_query, plaintext_output=True)
+            response = self.llm.query(processed_query, plaintext_output=True, stream=False)
             assistant_message = {"role": "assistant", "content": response}
             self.ui_messages.append(assistant_message)
             
@@ -202,9 +241,9 @@ class ChatApp(TTSBaseApp):
         print(f"Updating system prompt to: {new_system_prompt[:100]}...")
         try:
             with self.lock:
-                config.SYSTEM_MESSAGE = new_system_prompt.strip()
+                llm_config.SYSTEM_MESSAGE = new_system_prompt.strip()
                 # Force re-initialization of LLM to use the new system prompt
-                self.llm = AskLLM()
+                self.llm = AskLLM(resolved_model_alias=self.current_resolved_alias, config=llm_config)
                 self.current_status = f"System prompt updated. Model: {self.current_model}"
                 
             return self.current_status
@@ -215,28 +254,23 @@ class ChatApp(TTSBaseApp):
             return self.current_status
 
 def main():
-    # Parse command-line arguments
     parser = argparse.ArgumentParser(description="SesameAI Chat with TTS")
-    parser.add_argument("-m", "--model", help="Choose the model to use (supports partial matching)")
-    parser.add_argument("-v", "--voice", help="Choose the voice to use for TTS")
+    parser.add_argument("-m", "--model", help="Choose the model to use (supports partial matching)", default="dans")
+    parser.add_argument("-v", "--voice", help="Choose the voice to use for TTS", default=DEFAULT_VOICE),
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
     args = parser.parse_args()
-    
-    # Apply command-line arguments to config using the common function
-    setup_common_args_and_config(args)
-        
-    # IMPORTANT: Initialize app only after processing command-line arguments
-    chat_app = ChatApp()
-    
-    # Get available voices for the dropdown
+
+    try:
+        chat_app = ChatApp(model=args.model, voice=args.voice)
+    except Exception as e:
+        print(f"[Fatal] Failed to initialize ChatApp: {e}. Exiting.")
+        sys.exit(1)
+
     available_voices = chat_app.list_available_voices()
-    
-    # Get initial system prompt
-    initial_system_prompt = config.SYSTEM_MESSAGE
 
     with gr.Blocks(title="Chat", theme=gr.themes.Soft()) as demo:
         gr.Markdown("# 💬 Chat with TTS")
 
-        # State variables for sentence processing
         sentence_index = gr.State(value=0)
         sentence_end_index = gr.State(value=0)
         processing_active = gr.State(value=False)
@@ -267,7 +301,7 @@ def main():
                 with gr.Accordion("System Prompt", open=False):
                     system_prompt_editor = gr.Textbox(
                         label="Edit System Prompt",
-                        value=initial_system_prompt,
+                        value=llm_config.SYSTEM_MESSAGE,
                         lines=5,
                         interactive=True
                     )
@@ -327,27 +361,33 @@ def main():
 
         # Fixed event handlers with proper chain
         query_input.submit(
-            fn=chat_app.process_query,
+            fn=chat_app.interrupt_and_reset, # STEP 1: Interrupt
+            outputs=[status_output, processing_active, audio_output]
+        ).then(
+            fn=chat_app.process_query,        # STEP 2: Process new query
             inputs=[query_input, temperature_slider],
             outputs=[chatbot, status_output, sentence_index, sentence_end_index, processing_active, audio_output]
         ).then(
-            fn=lambda: "",
+            fn=lambda: "",                    # STEP 3: Clear input box
             outputs=[query_input]
         ).then(
-            fn=chat_app.sentence_generator_loop,
+            fn=chat_app.sentence_generator_loop, # STEP 4: Start new loop
             inputs=[sentence_index, sentence_end_index, processing_active, temperature_slider, speed_slider],
             outputs=[status_output, sentence_index, processing_active, audio_output]
         )
 
         submit_btn.click(
-            fn=chat_app.process_query,
+            fn=chat_app.interrupt_and_reset, # STEP 1: Interrupt
+            outputs=[status_output, processing_active, audio_output]
+        ).then(
+            fn=chat_app.process_query,        # STEP 2: Process new query
             inputs=[query_input, temperature_slider],
             outputs=[chatbot, status_output, sentence_index, sentence_end_index, processing_active, audio_output]
         ).then(
-            fn=lambda: "",
+            fn=lambda: "",                    # STEP 3: Clear input box
             outputs=[query_input]
         ).then(
-            fn=chat_app.sentence_generator_loop,
+            fn=chat_app.sentence_generator_loop, # STEP 4: Start new loop
             inputs=[sentence_index, sentence_end_index, processing_active, temperature_slider, speed_slider],
             outputs=[status_output, sentence_index, processing_active, audio_output]
         )
