@@ -1,62 +1,91 @@
-# SesameAI Text-to-Speech Model Runner
+# SesameAI Text-to-Speech Runner
 
-## Description
-This script provides a user-friendly interface for interacting with the SesameAI Text-to-Speech model,
-allowing users to generate high-quality speech from provided text input.
+This script provides a command-line interface for interacting with the SesameAI Text-to-Speech model, allowing users to generate high-quality speech from text input.
 
-### Prerequisites
-- Python 3.11
-- `pip` (Python package installer)
+## Prerequisites
 
-### Setting Up a Virtual Environment
-It is recommended to use a virtual environment to manage dependencies. You can create and activate a virtual environment using the following commands:
+*   Python 3.12+
+*   pip
+*   `ffmpeg` (required by `pydub` for audio processing and playback)
+    *   On Debian/Ubuntu: `sudo apt update && sudo apt install ffmpeg`
+    *   On macOS (using Homebrew): `brew install ffmpeg`  not sure if this works?
+    *   I gave up on Windows so if you have windows do yourself a favor and install WSL or something.
 
-```bash
-# Create a virtual environment
-python3 -m venv .venv
+## Setup
 
-# Activate the virtual environment
-# On Windows
-.venv\Scripts\activate
+1.  **Clone the repository:**
+    ```bash
+    git clone git@github.com:zenoran/sesame-tts.git
+    cd sesame-tts
+    ```
 
-# On Unix or MacOS
-source .venv/bin/activate
-```
+2.  **Create and activate a virtual environment (recommended):**
+    ```bash
+    python3 -m venv venv
+    source venv/bin/activate
+    ```
 
-### Windows installs to get Torch/Triton working properly - You can skip this for Linux IIRC
-On Windows, you need to install specific versions of `torch` and `torchaudio` that match your CUDA version. Also need this custom build of triton due to windows bugs.
+3.  **Install dependencies:**
+    *Note: Ensure you have PyTorch installed according to your system's CUDA capabilities if using GPU. See [PyTorch installation instructions](https://pytorch.org/get-started/locally/).*
+    ```bash
+    pip install torch torchaudio pydub
+    ```
+    *(If a `requirements.txt` file is provided, you can use `pip install -r requirements.txt` instead)*
 
-```bash
-pip install torch==2.4.0+cu121 torchvision torchaudio torchtune --extra-index-url https://download.pytorch.org/whl/cu121
-pip install https://huggingface.co/madbuda/triton-windows-builds/resolve/main/triton-3.0.0-cp311-cp311-win_amd64.whl
-```
+4.  **Voice Samples:** Ensure you have a `samples.py` file in the same directory, containing dictionaries that define the available voices and their corresponding audio samples. The keys should be the string representation of the path to the audio file, and the values should be the corresponding transcriptions. Example structure based on the provided `samples.py`:
+    ```python
+    # samples.py
+    from pathlib import Path
 
-### Download FFmpeg
-Go to FFmpeg.org or directly to gyan.dev for a Windows build
-Download the "FFmpeg Full" or "FFmpeg Essentials" build
-- Add the bin folder to your path.
+    # Base directory for audio files
+    AUDIO_DIR = Path("wav")
 
+    maya = {
+        str(AUDIO_DIR / "crab-story" / "mono_1.wav"): "OK fresh start, how about this... Close your eyes for a second...",
+        str(AUDIO_DIR / "crab-story" / "mono_2.wav"): "Alright, where was I?  Ah yes, the crimson sun...",
+        # ... more samples for maya
+    }
 
-### Installing Requirements
-Install the required packages using the `requirements.txt` file:
+    melina = {
+        str(AUDIO_DIR / "melina" / "melina-02.wav"): "As an ally by pact, in Marica's own words, I ask that you cease...",
+        # ... more samples for melina
+    }
+    ```
+    Make sure the audio files referenced in `samples.py` exist in the specified locations (e.g., a `wav` directory relative to the script).
 
-```bash
-pip install -r requirements.txt
-```
+## Usage
 
-## Running the Script
-```bash
-./start.sh
-```
+Run the script using `python tts_service.py`.
 
-## Web UI
-After starting the stack with `start.sh`, open your browser and navigate to:
+### Command-Line Arguments
 
-```
-http://localhost:9000/
-```
-You can then press and hold the "Start Recording" button to speak, release to stop, and hear the AI response streamed back.
+*   `-d`, `--device`: Device to run inference on (`cuda` or `cpu`). Default: `cuda`.
+*   `-v`, `--voice`: Voice to use (must match a dictionary name in `samples.py`). Defaults to the first voice found.
+*   `text`: (Optional) Text to synthesize for a single utterance. If provided, the audio is saved to the file specified by `--output`.
+*   `--output`: Output filename when providing `text`. Default: `output.wav`.
+*   `--temp`, `--temperature`: Generation temperature (0.1-1.0). Lower values are more predictable, higher values are more creative. Default: `0.8`.
+*   `--topk`: Top-K sampling value (10-100). Lower values are more focused, higher values are more varied. Default: `40`.
 
-## Notes
-- Input will be split based on sentences and play them as they are generated.
-- A final output for every prompt is always available as `combined_output.wav` and it gets OVERWRITTEN for every prompt. (grab it if u wanna keep it)
+### Examples
+
+1.  **Interactive Mode (using default voice 'alice' on CUDA):**
+    ```bash
+    python tts_service.py -v alice
+    ```
+    The script will load the model and voice, then wait for you to type text. Press Enter to synthesize and play. Type `exit` or `quit` to stop.
+
+2.  **Interactive Mode (using voice 'bob' on CPU):**
+    ```bash
+    python tts_service.py -v bob -d cpu --temp 0.7 --topk 50
+    ```
+
+3.  **Single Utterance to File:**
+    ```bash
+    python tts_service.py -v alice "Hello, this is a test." --output test_audio.wav
+    ```
+    This will generate audio for the text "Hello, this is a test." using the 'alice' voice and save it as `test_audio.wav`.
+
+4.  **Single Utterance to File (CPU, different parameters):**
+    ```bash
+    python tts_service.py -d cpu -v bob "Another example sentence." --output example.wav --temp 0.9 --topk 30
+    ```
