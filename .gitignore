@@ -89,3 +89,7 @@ combined_output.wav
 .gradio/certificate.pem
 wav
 samples.py
+hotmess/server.py
+hotmess/start.sh
+hotmess/static/client.html
+hotmess/static/index.html

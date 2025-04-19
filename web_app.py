@@ -10,13 +10,15 @@ import gradio as gr
 import torch
 import numpy as np
 from ask_llm.utils.config import config
-from ask_llm.main import AskLLM
+from ask_llm.core import AskLLM
+from ask_llm.model_manager import resolve_model_alias
 from utils.tts_base import TTSBaseApp
 import time
 import tempfile
 import os
 import argparse
 from utils.cli_args import setup_common_args_and_config
+import sys
 
 
 logger = logging.getLogger(__name__)
@@ -34,17 +36,35 @@ class StorytellerApp(TTSBaseApp):
         Your response will be spoken via a text-to-speech system, so you should only include words to be spoken in your response. Do not use any emojis or annotations. Do not use parentheticals or action lines. Remember to only respond with words to be spoken. Write out and normalize text, rather than using abbreviations, numbers, and so on. For example, $2.35 should be two dollars and thirty-five cents, MPH should be miles per hour, and so on. Mathematical formulae should be written out as a human would speak it. Use only standard English alphabet characters [A-Z] along with basic punctuation. Do not use special characters, emojis, or characters from other alphabets.
         Your response should not use quotes to indicate dialogue. Sentences should be complete and stand alone.
         """
-        # Use the config's DEFAULT_MODEL instead of hardcoding
-        if config.DEFAULT_MODEL not in config.HUGGINGFACE_MODELS + config.OPENAPI_MODELS + config.OLLAMA_MODELS:
-            if "pygmalion" in config.DEFAULT_MODEL.lower():
-                huggingface_model = "PygmalionAI/pygmalion-3-12b"
-                if huggingface_model not in config.HUGGINGFACE_MODELS:
-                    config.HUGGINGFACE_MODELS.append(huggingface_model)
-                config.DEFAULT_MODEL = huggingface_model
+        # config.DEFAULT_MODEL is set by setup_common_args_and_config
+        # We need the actual resolved alias
+        requested_alias = config.DEFAULT_MODEL_ALIAS # Use the alias from config/env/models.yaml
+        # Note: setup_common_args_and_config currently influences config.DEFAULT_MODEL, not alias directly
+        # Let's assume for now config.DEFAULT_MODEL_ALIAS is correctly set or use a fallback
+        if not requested_alias:
+             print("[Warning] No default model alias found in config, attempting lookup based on common names...")
+             # Simplified fallback logic, might need refinement
+             if "pygmalion" in config.DEFAULT_MODEL.lower(): requested_alias = "pygmalion-3-12b"
+             else: requested_alias = config.DEFAULT_MODEL # Fallback to raw model ID if no alias
+
+        resolved_alias = resolve_model_alias(requested_alias, config)
+
+        if not resolved_alias:
+             print(f"[Error] Could not resolve model alias '{requested_alias}'. Check config and dependencies.")
+             # Fallback or raise error? For now, print error and proceed hoping config is usable.
+             # A better approach might be to raise an exception or exit.
+             # raise ValueError(f"Could not resolve model alias: {requested_alias}")
+             self.llm = None # Indicate LLM failed to load
+        else:
+             print(f"Resolved model alias: {resolved_alias}")
+             config.VERBOSE = True # Keep verbose for web app debugging for now
+             try:
+                 self.llm = AskLLM(resolved_model_alias=resolved_alias, config=config)
+             except Exception as e:
+                 print(f"[Error] Failed to initialize AskLLM: {e}")
+                 self.llm = None
         
         config.VERBOSE = True
-        
-        self.llm = AskLLM()
         
         # State Variables
         self.current_sentence = ""
@@ -378,16 +398,30 @@ def main():
     parser = argparse.ArgumentParser(description="SesameAI Storyteller Web UI")
     parser.add_argument("-m", "--model", help="Choose the model to use (supports partial matching)")
     parser.add_argument("-v", "--voice", help="Choose the voice to use for TTS")
+    # Add other relevant args if needed by setup_common_args_and_config or resolution
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose output") # Needed for config
     args = parser.parse_args()
-    
+
     # Apply command-line arguments to config using the common function
+    # This might set config.DEFAULT_MODEL based on args.model
+    # The function likely modifies the global config directly
     setup_common_args_and_config(args)
-    
+    # Explicitly update verbose based on args AFTER setup, to override .env
+    config.VERBOSE = args.verbose
+
     # IMPORTANT: Initialize app only after processing command-line arguments
+    # The __init__ method now handles model resolution and AskLLM initialization
     storyteller = StorytellerApp()
 
+    # Check if LLM loaded successfully
+    if storyteller.llm is None:
+        print("[Fatal] LLM could not be initialized. Exiting.")
+        # Optionally, could run Gradio with a message indicating LLM failure
+        # For now, just exit.
+        sys.exit(1)
+
     with gr.Blocks(title="Storyteller TTS", theme=gr.themes.Soft()) as demo:
-        gr.Markdown("# 📚 Storyteller TTS")
+        gr.Markdown("# Storyteller TTS")
         
         # --- Shared Components (Outside Tabs) ---
         with gr.Row():

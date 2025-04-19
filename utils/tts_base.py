@@ -7,22 +7,17 @@ shared between different applications to avoid code duplication.
 import logging
 import re
 import time
-import torch
 import numpy as np
-from ask_llm.utils.config import config
-from tts_service import TTS
+from tts_service import TTS, DEFAULT_VOICE
 from utils.tts_utils import clean_text_for_tts
 import threading
 
 logger = logging.getLogger(__name__)
 
 class TTSBaseApp:
-    def __init__(self, device=None):
-        """Initialize TTS functionality."""
-        # Initialize TTS
-        device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        default_voice = config.DEFAULT_VOICE
-        self.tts = TTS(device=device)
+    def __init__(self, voice: str = DEFAULT_VOICE):
+        default_voice = voice
+        self.tts = TTS(device="cuda")
         self.tts.load_model()
         
         try:
