@@ -17,30 +17,26 @@ logger.setLevel(logging.WARNING)
 
 
 class StorytellerApp(WebAppBase):
-    def __init__(self, model: str = "pygmalion-3-12b", voice: str = "melina"):
-        # Initialize the base class first
+    def __init__(self, model: str = "dans-personalityengine", voice: str = "maya"):
         super().__init__(model=model, voice=voice)
 
-        llm_config.SYSTEM_MESSAGE = "You are a storyteller. You paint vivid images in the reader's mind. You are a master of description and detail. Your response will be spoken via a text-to-speech system, so you should only include words to be spoken in your response. Do not use any emojis or annotations. Do not use parentheticals or action lines. Remember to only respond with words to be spoken. Write out and normalize text, rather than using abbreviations, numbers, and so on. For example, $2.35 should be two dollars and thirty-five cents, MPH should be miles per hour, and so on. Mathematical formulae should be written out as a human would speak it. Use only standard English alphabet characters [A-Z] along with basic punctuation. Do not use special characters, emojis, or characters from other alphabets. Your response should not use quotes to indicate dialogue. Sentences should be complete and stand alone."
+        llm_config.SYSTEM_MESSAGE = "You are a master storyteller. Create engaging, short stories based on the user's prompt. The first sentence of every response should be more than six words. Do not use any emojis or annotations. Do not use parentheticals or action lines. Remember to only respond with words to be spoken. Write out and normalize text, rather than using abbreviations, numbers, and so on. For example, $2.35 should be two dollars and thirty-five cents, MPH should be miles per hour, and so on. Mathematical formulae should be written out as a human would speak it. Use only standard English alphabet characters [A-Z] along with basic punctuation. Your response should not use quotes to indicate dialogue. Sentences should be complete and stand alone. Respond directly with the story."
         llm_config.VERBOSE = True
         
-        # State Variables
         self.current_sentence = ""
         self.current_status = f"Idle. Ready for story or text input. (Voice: {self.current_voice})"
         self.prompt_audio_segments = [] # List of lists: [[seg1, seg2], [seg3], ...]
         self.generated_prompt_wav_paths = []
         self.generated_full_story_paths = []
+        self.story_text = ""
     
-        # Ensure history manager exists
         if not hasattr(self.llm, 'history_manager'):
             raise ValueError("LLM object does not have a required 'history_manager' attribute.")
     
     def _store_audio_segment(self, audio_segment, sentence_index):
         """Store the generated audio segment in the prompt_audio_segments list structure."""
-        # Append to the *last* list in prompt_audio_segments
         if self.prompt_audio_segments:
             self.prompt_audio_segments[-1].append(audio_segment)
-            # print(f"Appended segment to prompt group {len(self.prompt_audio_segments)}. Group size: {len(self.prompt_audio_segments[-1])}")
         else:
             print("Warning: prompt_audio_segments is empty, cannot append segment.")
     
@@ -68,7 +64,6 @@ class StorytellerApp(WebAppBase):
             return
         print(f"Response from LLM: {type(self.llm)}")
         
-        # Use the base class to split text into sentences
         new_sentences = self.split_text_into_sentences(response)
         print(f"Split LLM response into {len(new_sentences)} sentences:")
         for idx, sent in enumerate(new_sentences):
@@ -101,13 +96,11 @@ class StorytellerApp(WebAppBase):
         
         print(f"Appended {len(new_sentences)} sentences. Total now: {total_len}")
         
-        # Get initial audio from previous segments (for continuation)
         initial_audio_to_send = None
         if is_continuation:
             with self.lock:
                 if self.prompt_audio_segments and self.current_sample_rate:
                     try:
-                        # Use all segments except the last empty one we just added
                         all_segments = [seg for prompt_list in self.prompt_audio_segments[:-1] for seg in prompt_list]
                         if all_segments:
                             combined_seg = all_segments[0]
@@ -140,11 +133,9 @@ class StorytellerApp(WebAppBase):
         self.current_status = f"Processing pasted text (temp={temperature:.2f}, topk={topk})..."
         yield self.current_status, 0, 0, False, None, self.generated_prompt_wav_paths
         
-        # If not continuation, clear state first
         if not is_continuation:
             self._clear_internal_state()
         
-        # Use the base class to split text into sentences
         new_sentences = self.split_text_into_sentences(pasted_text)
         print(f"Split pasted text into {len(new_sentences)} sentences:")
         for idx, sent in enumerate(new_sentences):
@@ -158,7 +149,6 @@ class StorytellerApp(WebAppBase):
             end_idx_of_new = len(self.sentences) # End index for the generator loop
             total_len = len(self.sentences)
             
-            # Always add a new prompt group for the new pasted text
             self.prompt_audio_segments.append([])
                  
             print(f"Added new prompt group for pasted text. Total groups: {len(self.prompt_audio_segments)}")
@@ -170,12 +160,10 @@ class StorytellerApp(WebAppBase):
         
         print(f"Appended {len(new_sentences)} sentences from pasted text. Total now: {total_len}")
         
-        # Get initial audio from previous segments (for continuity)
         initial_audio_to_send = None
         with self.lock:
             if self.prompt_audio_segments and len(self.prompt_audio_segments) > 1 and self.current_sample_rate:
                 try:
-                    # Use all segments except the last empty one we just added
                     all_segments = [seg for prompt_list in self.prompt_audio_segments[:-1] for seg in prompt_list]
                     if all_segments:
                         combined_seg = all_segments[0]
@@ -199,24 +187,23 @@ class StorytellerApp(WebAppBase):
     
     def _clear_internal_state(self, clear_history: bool = True):
         """Internal method to clear state without returning UI values."""
-        print(f"Clearing internal session state... clear_history: {clear_history}")
-        if clear_history:
-            logger.debug("Clearing history...")
-            self.llm.history_manager.clear_history()
+        print(f"Clearing Storyteller internal state (clear_history={clear_history})...")
+        
         with self.lock:
             self.sentences = []
             self.current_sentence = ""
-            # Reset status including current voice
-            self.current_status = f"Session cleared. Ready for new story or text input. (Voice: {self.current_voice})"
             self.prompt_audio_segments = []
-            self.current_sample_rate = None
             self.generated_prompt_wav_paths = []
             self.generated_full_story_paths = []
-            
+            self.story_text = ""
+
+        super().clear_session(clear_history=clear_history)
+
+        self.current_status = f"Session cleared. Ready for new story or text input. (Voice: {self.current_voice})"
+        
     def clear_session_for_ui(self):
          """Method called by Gradio button to clear state and return UI defaults."""
          self._clear_internal_state()
-         # Return defaults for all relevant UI components
          return (
              [], # chatbot history
              self.current_status, # status_output
@@ -259,11 +246,9 @@ class StorytellerApp(WebAppBase):
 
         output_path = None
         try:
-            # Create a temp directory for organized storage
             temp_dir = os.path.join(tempfile.gettempdir(), "storyteller_audio")
             os.makedirs(temp_dir, exist_ok=True)
             
-            # Use temp dir and consistent naming
             num_digits = max(2, len(str(len(self.prompt_audio_segments))))
             filename = f"prompt_{prompt_index+1:0{num_digits}d}.wav"
             output_path = os.path.join(temp_dir, filename)
@@ -273,7 +258,6 @@ class StorytellerApp(WebAppBase):
             
             success_msg = f"Prompt {prompt_index+1} audio saved ({combined_audio.duration_seconds:.2f}s)."
             print(success_msg)
-            # Avoid duplicates
             if output_path not in self.generated_prompt_wav_paths:
                 self.generated_prompt_wav_paths.append(output_path)
             self.current_status = success_msg
@@ -283,7 +267,6 @@ class StorytellerApp(WebAppBase):
             error_msg = f"Error exporting prompt {prompt_index+1} audio to WAV: {e}"
             print(error_msg)
             self.current_status = error_msg
-            # Clean up partial file
             if output_path and os.path.exists(output_path):
                  try:
                      os.remove(output_path)
@@ -301,7 +284,6 @@ class StorytellerApp(WebAppBase):
         all_segments = []
         sample_rate = None
         with self.lock:
-            # Flatten the list of lists
             all_segments = [seg for prompt_list in self.prompt_audio_segments for seg in prompt_list]
             sample_rate = self.current_sample_rate
         
@@ -325,7 +307,6 @@ class StorytellerApp(WebAppBase):
 
         output_path = None
         try:
-            # Create a temp directory for organized storage
             temp_dir = os.path.join(tempfile.gettempdir(), "storyteller_audio")
             os.makedirs(temp_dir, exist_ok=True)
             
@@ -346,7 +327,6 @@ class StorytellerApp(WebAppBase):
             error_msg = f"Error exporting full story audio to WAV: {e}"
             print(error_msg)
             self.current_status = error_msg
-            # Clean up partial file
             if output_path and os.path.exists(output_path):
                  try:
                      os.remove(output_path)
@@ -357,26 +337,24 @@ class StorytellerApp(WebAppBase):
 
     def load_recent_history(self):
         """Loads history from the last 30 minutes, updates UI and internal state (text only)."""
-        print("Attempting to load recent history...")
+        logger.info("Attempting to load recent history for Storyteller...")
         self._clear_internal_state(clear_history=False) # Clear current state first
         self.current_status = "Loading recent history..."
-
+        yield ([], self.current_status, 0, False, None, [], [], "", "") # Initial update
+        
         try:
-            # Retrieve history (assuming it returns list of {'role': 'user'/'assistant', 'content': ...})
-            raw_history = self.llm.load_history(since_minutes=30)
-
+            raw_history = self._load_llm_history(minutes=30)
+            
             if not raw_history or len(raw_history) < 2:
                 self.current_status = "No recent history found within the last 30 minutes."
                 yield ([], self.current_status, 0, False, None, [], [], "", "")
                 return
             print(f"Retrieved {len(raw_history)} messages from the last 30 minutes.")
 
-            # Format for Gradio Chatbot: [(user, assistant), (user, assistant), ...]
             chatbot_history = []
             loaded_sentences = []
             loaded_prompt_segments = []
 
-            # Iterate in pairs (user, assistant)
             for i in range(0, len(raw_history) - 1, 2):
                 user_msg = raw_history[i]
                 assistant_msg = raw_history[i+1]
@@ -386,7 +364,6 @@ class StorytellerApp(WebAppBase):
                     assistant_content = assistant_msg['content']
                     chatbot_history.append((user_content, assistant_content))
                     
-                    # Process assistant content for internal state
                     sentences_from_assistant = self.split_text_into_sentences(assistant_content)
                     loaded_sentences.extend(sentences_from_assistant)
                     loaded_prompt_segments.append([]) # Add empty segment list for this interaction
@@ -395,11 +372,9 @@ class StorytellerApp(WebAppBase):
                      print(f"Skipping unexpected message sequence at index {i}: {user_msg.get('role')}, {assistant_msg.get('role')}")
 
 
-            # Update internal state under lock
             with self.lock:
                 self.sentences = loaded_sentences
                 self.prompt_audio_segments = loaded_prompt_segments
-                # Keep generated paths empty as we didn't load audio
                 self.generated_prompt_wav_paths = [] 
                 self.generated_full_story_paths = []
 
@@ -408,7 +383,6 @@ class StorytellerApp(WebAppBase):
             self.current_status = f"Loaded {num_interactions} interactions ({total_loaded_sentences} sentences) from recent history. Ready to continue."
             print(self.current_status)
 
-            # Final update to UI
             yield (chatbot_history, self.current_status, 0, False, None, [], [], "", "")
 
         except Exception as e:
@@ -416,27 +390,59 @@ class StorytellerApp(WebAppBase):
             print(error_msg)
             logger.exception("Error during history loading")
             self.current_status = error_msg
-            # Return cleared state on error
             yield ([], self.current_status, 0, False, None, [], [], "", "")
+
+    def gradio_sentence_generator_wrapper(
+        self, start_index, end_index, active, temperature=0.7, speed_factor=1.2, speaker_id_maybe_float: float = 1.0
+    ):
+        if not active:
+            yield (
+                self.current_status,
+                start_index,
+                False,
+                None,
+                self.generated_prompt_wav_paths
+            )
+            return
+
+        speaker_id = int(speaker_id_maybe_float) # Cast to int
+
+        generator = self.sentence_generator_loop(
+            start_index, end_index, active, temperature, speed_factor, speaker=speaker_id # Pass int speaker ID
+        )
+
+        next_idx = start_index
+        try:
+            while True:
+                is_active, audio_tuple = next(generator)
+                if not is_active: # Loop finished or stopped
+                    break
+                next_idx += 1 # We successfully processed one more sentence
+                yield self.current_status, next_idx, is_active, audio_tuple, self.generated_prompt_wav_paths
+        except StopIteration:
+            logger.info("Sentence generator loop finished normally.")
+            yield self.current_status, next_idx, False, None, self.generated_prompt_wav_paths
+        except Exception as e:
+            logger.error(f"Error in sentence generator wrapper: {e}")
+            error_status = self.current_status = f"Error during audio generation: {e}"
+            yield error_status, next_idx, False, None, self.generated_prompt_wav_paths
 
 
 # --- Gradio UI ---
 def main():
 
-    parser = argparse.ArgumentParser(description="SesameAI Chat with TTS")
+    parser = argparse.ArgumentParser(description="SesameAI Storyteller with TTS")
     parser.add_argument(
         "-m",
         "--model",
         help="Choose the model to use (supports partial matching)",
-        default="pygmalion-3-12b",
+        default="pygmalion-3-12b", # Keep original default or update? Let's keep original for now
     )
-    (
-        parser.add_argument(
+    parser.add_argument(
             "-v",
             "--voice",
             help="Choose the voice to use for TTS",
-            default="melina",
-        ),
+            default="melina", # Keep original default or update? Let's keep original for now
     )
     parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
     args = parser.parse_args()
@@ -444,24 +450,23 @@ def main():
     try:
         storyteller = StorytellerApp(model=args.model, voice=args.voice)
     except Exception as e:
-        print(f"[Fatal] Failed to initialize ChatApp: {e}. Exiting.")
+        print(f"[Fatal] Failed to initialize StorytellerApp: {e}. Exiting.")
         sys.exit(1)
-    
+
     if storyteller.llm is None:
         print("[Fatal] LLM could not be initialized. Exiting.")
         sys.exit(1)
 
     with gr.Blocks(title="Storyteller TTS", theme=gr.themes.Soft()) as demo:
-        gr.Markdown("# Storyteller TTS")
-        
-        # --- Shared Components (Outside Tabs) ---
+        gr.Markdown("# 📖 Storyteller TTS") # Use updated title
+
         with gr.Row():
             status_output = gr.Textbox(label="Status", lines=1, interactive=False, value=storyteller.current_status, scale=8)
             reset_btn = gr.Button("Reset Session", variant="stop", scale=1, min_width=150)
             load_history_btn = gr.Button("Load Recent History", scale=1, min_width=150)
 
         with gr.Row():
-             voice_selector = gr.Radio(
+             voice_selector = gr.Radio( # Keep Radio as per original structure
                  label="Select Voice",
                  choices=storyteller.list_available_voices(),
                  value=storyteller.current_voice,
@@ -469,280 +474,265 @@ def main():
                  scale=4
              )
              streaming_audio_output = gr.Audio(
-                 label="Narration Stream",
+                 label="Narration Stream", # Keep original label
                  autoplay=True,
-                 streaming=True,    
+                 streaming=True,
                  show_label=True,
-                 show_download_button=False, 
-                 interactive=False, 
+                 show_download_button=False, # Keep original setting
+                 interactive=False,
                  elem_id="narration_audio",
-                 value=None,  # Start with no audio
-                 scale=6 # Adjust scale
+                 value=None,
+                 scale=6
              )
 
-        # Add TTS generation parameters
         with gr.Row():
             temperature_slider = gr.Slider(
-                minimum=0.1, maximum=1.0, step=0.05, value=0.8,
-                label="Temperature (Creativity)", 
-                info="Lower = more predictable, Higher = more creative",
+                minimum=0.1, maximum=1.0, step=0.1, value=0.9, label="LLM Temperature", # Keep label from CURRENT
                 scale=3
             )
-            topk_slider = gr.Slider(
-                minimum=10, maximum=100, step=5, value=40,
-                label="Top-K (Variety)",
-                info="Lower = more focused, Higher = more varied options",
+            speed_slider = gr.Slider(
+                minimum=0.75, maximum=2.0, step=0.05, value=1.0, label="Speech Speed",
                 scale=3
+            )
+            speaker_id_input = gr.Number(
+                label="Speaker ID",
+                info="Integer ID for the speaker voice.",
+                value=1, # Default speaker ID
+                minimum=0, # Or appropriate minimum ID
+                step=1,    # Ensure integer steps
+                interactive=True,
+                scale=2 # Adjust scale
             )
 
-        # State variables
         sentence_index_to_process = gr.State(value=0)
         sentence_end_index = gr.State(value=0)
         processing_active = gr.State(value=False)
 
-        # --- Tabs for Input Modes ---
+
         with gr.Tabs():
-            # --- LLM Story Tab ---
             with gr.TabItem("LLM Story Generation"):
                 query_input = gr.Textbox(
                     placeholder="Start or continue a story...",
                     label="LLM Prompt", lines=1, show_label=True)
-                
                 with gr.Row():
                     generate_btn = gr.Button("✨ Start New Story", variant="primary", size="sm")
                     continue_btn = gr.Button("➡️ Continue Story", variant="secondary", size="sm")
+                chatbot = gr.Chatbot(label="LLM Conversation", height=300)
 
-                chatbot = gr.Chatbot(label="LLM Conversation", height=300) 
-
-            # --- Pasted Text Tab ---
             with gr.TabItem("Pasted Text Input"):
                 pasted_text_input = gr.Textbox(label="Paste Text Here", lines=10)
-                
                 with gr.Row():
                     process_text_btn = gr.Button("✨ Start New Text", variant="primary", size="sm")
                     continue_text_btn = gr.Button("➡️ Append Text", variant="secondary", size="sm")
+                clear_pasted_btn = gr.Button("Clear Pasted Text", variant="stop", size="sm")
 
 
-        # --- Shared Output Components (Below Tabs) ---
         with gr.Row():
             generated_files_output = gr.File(
-                label="Segment Audio Files (WAV)", 
-                file_count="multiple", 
+                label="Segment Audio Files (WAV)", # Keep original label
+                file_count="multiple",
                 interactive=False,
                 height=100,
             )
-
         with gr.Row():
             download_full_story_btn = gr.Button("💾 Generate & Download Full Story (WAV)", scale=1)
             full_story_download_output = gr.File(
-                label="Full Story Download(s)", 
-                file_count="multiple", 
+                label="Full Story Download(s)",
+                file_count="multiple",
                 interactive=False,
                 scale=3,
                 height=40
             )
 
-        # --- Event Handlers ---
 
-        # Voice Selector Change Handler
         voice_selector.change(
             fn=storyteller.change_voice,
             inputs=[voice_selector],
-            outputs=[status_output] # Update status on voice change
+            outputs=[status_output]
         )
 
-        def sentence_generator_loop(start_index, end_index, active, temperature, topk):
-            """Generator that processes sentences in sequence and yields audio."""
-            if not active:
-                print("Generator triggered but not active.")
-                # Yield 5 values: status, index, active, audio, files
-                yield storyteller.current_status, start_index, False, None, storyteller.generated_prompt_wav_paths
-                return
+        process_llm_outputs = [
+             chatbot, # LLM History
+             status_output,
+             sentence_index_to_process,
+             sentence_end_index,
+             processing_active,
+             streaming_audio_output, # Initial audio for continuation
+             generated_files_output # Pass through existing files
+        ]
+        process_pasted_outputs = [
+             status_output,
+             sentence_index_to_process,
+             sentence_end_index,
+             processing_active,
+             streaming_audio_output, # Initial audio for continuation
+             generated_files_output # Pass through existing files
+        ]
 
-            print(f"Generator starting loop from index: {start_index} up to {end_index} (temp={temperature}, topk={topk})") 
-            current_index = start_index
-            prompt_index_to_save = -1
-            
-            # Get initial prompt group index - always target the last one added
-            with storyteller.lock:
-                if storyteller.prompt_audio_segments:
-                    prompt_index_to_save = len(storyteller.prompt_audio_segments) - 1
-                    print(f"Generator will target prompt group {prompt_index_to_save+1}")
+        loop_outputs = [
+            status_output,
+            sentence_index_to_process, # next_idx yielded by wrapper
+            processing_active, # active status yielded by wrapper
+            streaming_audio_output, # audio chunk yielded by wrapper
+            generated_files_output # files list yielded by wrapper
+        ]
 
-            while True:
-                with storyteller.lock:
-                    total_sentences = len(storyteller.sentences)
-                    is_within_bounds = current_index < total_sentences
 
-                if not active or not is_within_bounds:
-                    # We're done - determine final status and save audio file
-                    final_status = storyteller.current_status # Default to current status
-                    final_paths = storyteller.generated_prompt_wav_paths # Default to current paths
-                    
-                    # Only save if we reached the end naturally (not cancelled)
-                    if active and not is_within_bounds and prompt_index_to_save >= 0:
-                        print(f"Generator loop for prompt {prompt_index_to_save+1} finished. Saving audio...")
-                        final_paths = storyteller._save_audio_for_prompt(prompt_index_to_save)
-                        final_status = storyteller.current_status # Use updated status after save
-                        # Add completion message if appropriate
-                        if "Error" not in final_status and "saved" in final_status:
-                            final_status += " Ready for next input."
-                    elif not active:
-                        final_status = "Processing stopped by user (Reset)."
-                    elif "Error" not in final_status and "Reached end" not in final_status:
-                        final_status += " Processing complete."
-
-                    print(f"Generator loop finished. Final status: {final_status}")
-                    # Yield final 5 values
-                    yield final_status, current_index, False, None, final_paths
-                    
-                    # Show a toast notification for completion
-                    if "Error" in final_status:
-                        gr.Warning(f"TTS Processing ended with error: {final_status}")
-                    elif active and not is_within_bounds:
-                        gr.Info("TTS Processing Complete!")
-                    return
-
-                # Process the current sentence
-                status, audio_tuple = storyteller.generate_audio_for_sentence_index(current_index, temperature, topk)
-                next_index = current_index + 1
-                
-                # Did we get an error? If so, might need to stop
-                if "Error" in status and audio_tuple is None:
-                    print(f"Error occurred processing sentence {current_index+1}. Will stop.")
-                    yield status, next_index, False, None, storyteller.generated_prompt_wav_paths
-                    gr.Warning(f"TTS Processing error: {status}")
-                    return
-
-                # Yield status update and continue
-                yield status, next_index, active, audio_tuple, storyteller.generated_prompt_wav_paths
-                current_index = next_index
-                time.sleep(0.05)
-
-        # --- Basic LLM button handlers ---
-
-        # Generate New Story button
         generate_btn.click(
+            fn=storyteller.interrupt_and_reset, # Interrupt first
+            outputs=[status_output]
+        ).then(
             fn=storyteller.process_llm_query,
-            inputs=[query_input, chatbot, gr.State(value=False), temperature_slider, topk_slider], # is_continuation=False
-            outputs=[chatbot, status_output, sentence_index_to_process, sentence_end_index, 
-                     processing_active, streaming_audio_output, generated_files_output]
+            inputs=[query_input, chatbot, gr.State(value=False), temperature_slider],
+            outputs=process_llm_outputs,
+            show_progress="full", # Show progress for LLM query
         ).then(
             fn=lambda: "", # Clear query input
             outputs=[query_input]
         ).then(
-            fn=sentence_generator_loop,
-            inputs=[sentence_index_to_process, sentence_end_index, processing_active, 
-                    temperature_slider, topk_slider],
-            outputs=[status_output, sentence_index_to_process, processing_active, 
-                     streaming_audio_output, generated_files_output]
+            fn=storyteller.gradio_sentence_generator_wrapper,
+            inputs=[
+                sentence_index_to_process,
+                sentence_end_index,
+                processing_active,
+                temperature_slider, # Pass LLM temp? Wrapper doesn't use it directly for TTS
+                speed_slider,       # Pass Speed
+                speaker_id_input    # Pass Speaker ID
+            ],
+            outputs=loop_outputs,
+            show_progress="hidden", # Hide progress for streaming loop
         )
 
-        # Continue Story button
         continue_btn.click(
+            fn=storyteller.interrupt_and_reset, # Interrupt first
+            outputs=[status_output]
+        ).then(
             fn=storyteller.process_llm_query,
-            inputs=[query_input, chatbot, gr.State(value=True), temperature_slider, topk_slider], # is_continuation=True 
-            outputs=[chatbot, status_output, sentence_index_to_process, sentence_end_index, 
-                     processing_active, streaming_audio_output, generated_files_output]
+            inputs=[query_input, chatbot, gr.State(value=True), temperature_slider],
+            outputs=process_llm_outputs,
+            show_progress="full",
         ).then(
             fn=lambda: "", # Clear query input
             outputs=[query_input]
         ).then(
-            fn=sentence_generator_loop,
-            inputs=[sentence_index_to_process, sentence_end_index, processing_active,
-                    temperature_slider, topk_slider],
-            outputs=[status_output, sentence_index_to_process, processing_active, 
-                     streaming_audio_output, generated_files_output]
+            fn=storyteller.gradio_sentence_generator_wrapper,
+            inputs=[
+                sentence_index_to_process,
+                sentence_end_index,
+                processing_active,
+                temperature_slider,
+                speed_slider,
+                speaker_id_input
+            ],
+            outputs=loop_outputs,
+            show_progress="hidden",
         )
-        
-        # Enter key in query input - acts like "New Story"
+
         query_input.submit(
-            fn=storyteller.process_llm_query,
-            inputs=[query_input, chatbot, gr.State(value=False), temperature_slider, topk_slider], # is_continuation=False
-            outputs=[chatbot, status_output, sentence_index_to_process, sentence_end_index, 
-                     processing_active, streaming_audio_output, generated_files_output]
-        ).then(
-            fn=lambda: "", # Clear query input
-            outputs=[query_input]
-        ).then(
-            fn=sentence_generator_loop,
-            inputs=[sentence_index_to_process, sentence_end_index, processing_active,
-                    temperature_slider, topk_slider],
-            outputs=[status_output, sentence_index_to_process, processing_active, 
-                     streaming_audio_output, generated_files_output]
-        )
+             fn=storyteller.interrupt_and_reset,
+             outputs=[status_output]
+         ).then(
+             fn=storyteller.process_llm_query,
+             inputs=[query_input, chatbot, gr.State(value=False), temperature_slider],
+             outputs=process_llm_outputs,
+             show_progress="full",
+         ).then(
+             fn=lambda: "",
+             outputs=[query_input]
+         ).then(
+             fn=storyteller.gradio_sentence_generator_wrapper,
+             inputs=[
+                 sentence_index_to_process,
+                 sentence_end_index,
+                 processing_active,
+                 temperature_slider,
+                 speed_slider,
+                 speaker_id_input
+             ],
+             outputs=loop_outputs,
+             show_progress="hidden",
+         )
 
-        # Pasted Text button
         process_text_btn.click(
-            fn=storyteller.process_pasted_text,
-            inputs=[pasted_text_input, temperature_slider, topk_slider, gr.State(value=False)], # is_continuation=False
-            outputs=[status_output, sentence_index_to_process, sentence_end_index, 
-                     processing_active, streaming_audio_output, generated_files_output]
-        ).then(
-            fn=sentence_generator_loop,
-            inputs=[sentence_index_to_process, sentence_end_index, processing_active,
-                    temperature_slider, topk_slider],
-            outputs=[status_output, sentence_index_to_process, processing_active, 
-                     streaming_audio_output, generated_files_output]
-        )
-        # Note: intentionally NOT clearing pasted_text_input
+             fn=storyteller.interrupt_and_reset,
+             outputs=[status_output]
+         ).then(
+             fn=storyteller.process_pasted_text,
+             inputs=[pasted_text_input, speed_slider, gr.State(value=False)],
+             outputs=process_pasted_outputs, # Use specific outputs if needed
+             show_progress="full",
+         ).then(
+             fn=storyteller.gradio_sentence_generator_wrapper,
+             inputs=[
+                 sentence_index_to_process,
+                 sentence_end_index,
+                 processing_active,
+                 temperature_slider, # Should this be a different TTS temp slider? Or use default?
+                 speed_slider,
+                 speaker_id_input
+             ],
+             outputs=loop_outputs,
+             show_progress="hidden",
+         )
 
-        # Continue Text button for pasted text
         continue_text_btn.click(
-            fn=storyteller.process_pasted_text,
-            inputs=[pasted_text_input, temperature_slider, topk_slider, gr.State(value=True)], # is_continuation=True
-            outputs=[status_output, sentence_index_to_process, sentence_end_index, 
-                     processing_active, streaming_audio_output, generated_files_output]
-        ).then(
-            fn=sentence_generator_loop,
-            inputs=[sentence_index_to_process, sentence_end_index, processing_active,
-                    temperature_slider, topk_slider],
-            outputs=[status_output, sentence_index_to_process, processing_active, 
-                     streaming_audio_output, generated_files_output]
-        )
+             fn=storyteller.interrupt_and_reset,
+             outputs=[status_output]
+         ).then(
+             fn=storyteller.process_pasted_text,
+             inputs=[pasted_text_input, speed_slider, gr.State(value=True)],
+             outputs=process_pasted_outputs,
+             show_progress="full",
+         ).then(
+             fn=storyteller.gradio_sentence_generator_wrapper,
+             inputs=[
+                 sentence_index_to_process,
+                 sentence_end_index,
+                 processing_active,
+                 temperature_slider, # TTS temp?
+                 speed_slider,
+                 speaker_id_input
+             ],
+             outputs=loop_outputs,
+             show_progress="hidden",
+         )
 
-        # Reset Button with custom handler for audio cleanup
+        clear_pasted_btn.click(lambda: "", outputs=[pasted_text_input])
+
         def reset_handler():
-            # First call storyteller's clear session
             result = storyteller.clear_session_for_ui()
-            # Create a completely new empty audio output to replace the old one
-            # This forces Gradio to completely reset the audio component
             return result
 
         reset_btn.click(
-            fn=reset_handler, 
-            outputs=[chatbot, status_output, sentence_index_to_process, processing_active, 
+            fn=reset_handler,
+            outputs=[chatbot, status_output, sentence_index_to_process, processing_active,
                      streaming_audio_output, generated_files_output, full_story_download_output,
-                     query_input, pasted_text_input],
+                     query_input, pasted_text_input], # Ensure all relevant outputs are cleared
         )
-        
-        # Full Story Download Button
+
         download_full_story_btn.click(
             fn=storyteller.generate_and_save_full_story,
-            inputs=[], # No inputs needed, uses internal state
-            outputs=[full_story_download_output, status_output] # Output file path list and status
+            inputs=[],
+            outputs=[full_story_download_output, status_output]
         )
 
-        # Load History Button Handler
         load_history_outputs = [
-            chatbot, 
-            status_output, 
-            sentence_index_to_process, 
-            processing_active, 
-            streaming_audio_output, 
-            generated_files_output, 
+            chatbot,
+            status_output,
+            sentence_index_to_process,
+            processing_active,
+            streaming_audio_output,
+            generated_files_output,
             full_story_download_output,
-            query_input, # Clear query input
-            pasted_text_input # Clear pasted text input
+            query_input,
+            pasted_text_input
         ]
-
         load_history_btn.click(
-            fn=storyteller.load_recent_history, 
+            fn=storyteller.load_recent_history,
             inputs=[],
             outputs=load_history_outputs
         )
-    
-    # Clean up old temp files on start
+
     temp_dir = os.path.join(tempfile.gettempdir(), "storyteller_audio")
     if os.path.exists(temp_dir):
         print(f"Cleaning temp directory: {temp_dir}")
@@ -751,9 +741,10 @@ def main():
                  try:
                       os.remove(os.path.join(temp_dir, filename))
                  except OSError:
-                      pass # Ignore if file is locked or doesn't exist
-                      
-    demo.queue().launch(server_name="0.0.0.0") # Use queue for handling multiple clicks
+                      pass
+
+    demo.queue().launch(server_name="0.0.0.0", share=False) # Keep queue and launch settings
+
 
 if __name__ == "__main__":
     main() 

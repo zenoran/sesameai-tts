@@ -142,7 +142,7 @@ class ChatApp(WebAppBase):
             yield self.ui_messages, self.update_status(error_msg), 0, 0, False, None
 
     def gradio_sentence_generator_wrapper(
-        self, start_index, end_index, active, temperature=0.7, speed_factor=1.2
+        self, start_index, end_index, active, temperature=0.7, speed_factor=1.2, speaker_id_maybe_float: float = 1.0
     ):
         if not active:
             yield (
@@ -152,9 +152,11 @@ class ChatApp(WebAppBase):
                 None,
             )  # status, next_idx, active, audio
             return
+        
+        speaker_id = int(speaker_id_maybe_float)
 
         generator = self.sentence_generator_loop(
-            start_index, end_index, active, temperature, speed_factor
+            start_index, end_index, active, temperature, speed_factor, speaker=speaker_id
         )
 
         next_idx = start_index
@@ -175,14 +177,11 @@ class ChatApp(WebAppBase):
             )
 
     def clear_session(self, clear_history: bool = True):
-        print("Clearing ChatApp session...")
-        if clear_history and hasattr(self, "llm") and hasattr(self.llm, "history_manager"):
-            self.llm.history_manager.clear_history()
-            print("LLM history cleared.")
-
+        print(f"Clearing ChatApp session (clear_history={clear_history})...")
+        
         self.ui_messages = []
-
-        super().clear_session()
+        # Call base class method FIRST to handle LLM history and common state
+        super().clear_session(clear_history=clear_history)
 
         if clear_history:
             status_update = f"Session cleared. Ready. (Model: {self.current_model}, Voice: {self.current_voice})"
@@ -197,16 +196,15 @@ class ChatApp(WebAppBase):
 
     def load_recent_history(self):
         """Loads LLM history from the last 30 minutes and updates the UI."""
-        print("Attempting to load recent history for web_chat...")
+        logger.info("Attempting to load recent history for web_chat...")
         # Clear UI and internal state *without* clearing LLM history
         chatbot_val, status_update, audio_val, sent_idx, proc_active = self.clear_session(clear_history=False)
         self.current_status = "Loading recent history..."
         yield (chatbot_val, self.update_status(self.current_status), audio_val, sent_idx, proc_active)
 
         try:
-            # Use the same history loading method as storyteller
-            raw_history = self.llm.load_history(since_minutes=30)
-            print(f"Retrieved {len(raw_history)} messages from the last 30 minutes.")
+            # Use the base class helper method
+            raw_history = self._load_llm_history(minutes=30)
 
             if not raw_history:
                 self.current_status = "No recent history found within the last 30 minutes."
@@ -325,6 +323,14 @@ def main():
                     value=chat_app.current_voice,
                     interactive=True,
                 )
+                speaker_id_input = gr.Number(
+                    label="Speaker ID",
+                    info="Integer ID for the speaker voice.",
+                    value=1,
+                    minimum=0,
+                    step=1,
+                    interactive=True,
+                )
                 temperature_slider = gr.Slider(
                     minimum=0.1, maximum=1.0, step=0.1, value=0.9, label="Temperature"
                 )
@@ -393,6 +399,7 @@ def main():
                 processing_active,
                 temperature_slider,
                 speed_slider,
+                speaker_id_input,
             ],
             outputs=loop_outputs,
             show_progress="hidden",
@@ -411,6 +418,7 @@ def main():
                 processing_active,
                 temperature_slider,
                 speed_slider,
+                speaker_id_input,
             ],
             outputs=loop_outputs,
             show_progress="hidden",

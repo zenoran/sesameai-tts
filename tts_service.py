@@ -260,6 +260,7 @@ class TTS:
     def generate_audio_segment(
         self, 
         prompt: str, 
+        speaker: int = 1,
         fade_duration: int = 50, 
         start_silence_duration: int = 500, 
         end_silence_duration: int = 100,
@@ -271,6 +272,7 @@ class TTS:
         
         Args:
             prompt: Text to synthesize
+            speaker: Speaker ID
             fade_duration: Duration of fade-in and fade-out in milliseconds
             start_silence_duration: Duration of silence at the beginning in milliseconds
             end_silence_duration: Duration of silence at the end in milliseconds
@@ -282,7 +284,7 @@ class TTS:
         """
         
         # Generate raw audio
-        audio = self.generate_with_context(prompt, speaker=1, max_audio_length_ms=30_000, temperature=temperature, topk=topk)
+        audio = self.generate_with_context(prompt, speaker=speaker, max_audio_length_ms=30_000, temperature=temperature, topk=topk)
 
         # Normalize audio
         audio = audio.to(torch.float32)

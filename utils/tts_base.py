@@ -73,7 +73,7 @@ class TTSBaseApp:
                 print(self.current_status)
             return self.current_status
     
-    def generate_audio_for_sentence_index(self, sentence_index, temperature=0.8, topk=40, speed_factor=1.0):
+    def generate_audio_for_sentence_index(self, sentence_index, temperature=0.8, topk=40, speed_factor=1.0, speaker: int = 1):
         """Generate audio for a specific sentence index and return audio data for streaming"""
         audio_data = None  # Default to None
         
@@ -96,6 +96,7 @@ class TTSBaseApp:
             # Generate audio for this sentence
             audio_segment = self.tts.generate_audio_segment(
                 sentence,
+                speaker=speaker,
                 temperature=temperature,
                 topk=topk,
                 fade_duration=50,

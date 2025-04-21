@@ -65,7 +65,7 @@ class WebAppBase(TTSBaseApp, abc.ABC):
         # Subclasses should handle UI state reset (e.g., processing_active flag, audio player)
 
     def sentence_generator_loop(
-        self, start_index, end_index, active, temperature=0.7, speed_factor=1.2, topk=40
+        self, start_index, end_index, active, temperature=0.7, speed_factor=1.2, topk=40, speaker: int = 1
     ):
         if not active:
             logger.info("Generator triggered but not active.")
@@ -96,7 +96,7 @@ class WebAppBase(TTSBaseApp, abc.ABC):
                 return
 
             status, audio_tuple = self.generate_audio_for_sentence_index(
-                current_index, temperature, topk=topk, speed_factor=speed_factor
+                current_index, temperature, topk=topk, speed_factor=speed_factor, speaker=speaker
             )
             next_index = current_index + 1
 
@@ -114,8 +114,20 @@ class WebAppBase(TTSBaseApp, abc.ABC):
             current_index = next_index
             time.sleep(0.05)
 
-    def clear_session(self):
+    def clear_session(self, clear_history: bool = True):
         logger.info("Clearing base session state...")
+        
+        # Clear LLM history if requested
+        if clear_history:
+            if hasattr(self.llm, 'history_manager') and self.llm.history_manager is not None:
+                try:
+                    self.llm.history_manager.clear_history()
+                    logger.info("LLM history cleared.")
+                except Exception as e:
+                    logger.error(f"Error clearing LLM history: {e}")
+            else:
+                logger.warning("LLM object or history manager not found, skipping history clear.")
+                
         # Clean up temporary audio files
         for audio_path in self.temp_audio_files:
             try:
@@ -136,6 +148,21 @@ class WebAppBase(TTSBaseApp, abc.ABC):
         self.clear_ui()  # Call subclass UI clearing
         logger.info("Base session state cleared.")
         # Subclass should handle history, UI messages, and status updates
+
+    def _load_llm_history(self, minutes: int = 30):
+        """Helper method to load LLM history from the manager."""
+        logger.info(f"Attempting to load LLM history from the last {minutes} minutes...")
+        if not hasattr(self.llm, 'load_history') or not callable(self.llm.load_history):
+            logger.error("LLM object does not have a callable 'load_history' method.")
+            raise AttributeError("LLM object missing required 'load_history' method.")
+            
+        try:
+            raw_history = self.llm.load_history(since_minutes=minutes)
+            logger.info(f"Retrieved {len(raw_history)} messages from history.")
+            return raw_history
+        except Exception as e:
+            logger.exception(f"Error loading history via llm.load_history: {e}")
+            raise # Re-raise the exception for the caller to handle
 
     def change_model(self, new_model_requested):
         print(f"Attempting to change model to: {new_model_requested}")
