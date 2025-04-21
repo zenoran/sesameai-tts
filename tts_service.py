@@ -89,11 +89,7 @@ class TTS:
         print("Open Sesame...")
         try:
             self.generator = load_csm_1b(self.device)
-            
-            # Initialize watermarker
-            from sesameai.watermarking import load_watermarker
-            self.watermarker = load_watermarker(self.device)
-            
+              
         except Exception as e:
             print(f"Error loading model: {str(e)}")
             raise
@@ -119,7 +115,6 @@ class TTS:
 
 
     def _prepare_context(self) -> None:
-        """Precompute context tokens for faster generation."""
         if not self.generator:
             raise ValueError("Model not loaded. Call load_model() first.")
             
@@ -133,24 +128,25 @@ class TTS:
         print("Reference audio context prepared")
 
     def _load_audio(self, audio_path: str) -> torch.Tensor:
+        """Load and preprocess audio file for model consumption.
+              - if audio is converted, save the processed audio to the original path
+              - return the processed audio tensor
         """
-        Load and preprocess audio file for model consumption.
-        
-        Args:
-            audio_path: Path to the audio file
-            
-        Returns:
-            Preprocessed audio tensor
-        """
+
         # Normalize path for cross-platform compatibility
-        audio_path = Path(audio_path)
-        logger.debug(f"Loading audio: {audio_path}")
-        audio_tensor, sample_rate = torchaudio.load(str(audio_path))
+        audio_path_obj = Path(audio_path) # Use a different variable name for Path object
+        logger.debug(f"Loading audio: {audio_path_obj}")
+        audio_tensor, sample_rate = torchaudio.load(str(audio_path_obj))
+
+        needs_saving = False
 
         # Convert stereo to mono if necessary
         if audio_tensor.shape[0] > 1:
             logger.debug("Converting stereo to mono")
-            audio_tensor = audio_tensor.mean(dim=0)
+            audio_tensor = audio_tensor.mean(dim=0, keepdim=True) # Keep dim for saving
+            needs_saving = True
+        elif audio_tensor.dim() == 1: # Ensure it has a channel dim if mono
+             audio_tensor = audio_tensor.unsqueeze(0)
 
         # Resample if sample rates differ
         if sample_rate != self.generator.sample_rate:
@@ -158,7 +154,20 @@ class TTS:
             audio_tensor = torchaudio.functional.resample(
                 audio_tensor, sample_rate, self.generator.sample_rate
             )
+            needs_saving = True
+            # Update sample_rate variable after resampling for saving
+            sample_rate = self.generator.sample_rate 
 
+        # Save the processed audio back to the original path if modified
+        if needs_saving:
+            logger.warning(f"Overwriting original file with processed audio: {audio_path_obj}")
+            try:
+                torchaudio.save(str(audio_path_obj), audio_tensor, sample_rate, format="wav")
+                logger.info(f"Successfully saved processed audio to: {audio_path_obj}")
+            except Exception as e:
+                logger.error(f"Failed to save processed audio to {audio_path_obj}: {e}")
+
+        # Return the tensor squeezed to 1D for subsequent processing
         return audio_tensor.squeeze()
 
     def generate_audio_segment(
@@ -169,7 +178,8 @@ class TTS:
         start_silence_duration: int = 500, 
         end_silence_duration: int = 100,
         temperature: float = 0.8,
-        topk: int = 40
+        topk: int = 40,
+        replace_context: bool = True
     ) -> AudioSegment:
         """
         Generate an AudioSegment from text with proper silence padding and fading.
@@ -194,29 +204,10 @@ class TTS:
             context=self.context_segments,  # Pass the prepared context segments
             max_audio_length_ms=30_000,      # TODO: Consider making this configurable?
             temperature=temperature,
-            topk=topk
+            topk=topk,
         )
-
-        # Apply watermarking (moved from the old generate_with_context)
-        audio, wm_sample_rate = watermark(
-            self.watermarker, audio, self.generator.sample_rate, CSM_1B_GH_WATERMARK
-        )
-        audio = torchaudio.functional.resample(
-            audio, orig_freq=wm_sample_rate, new_freq=self.generator.sample_rate
-        )
-        
-        # Normalize audio
-        audio = audio.to(torch.float32)
-        if audio.dim() > 1:
-            audio = audio.squeeze()
-        # Handle potential empty audio tensor after watermarking/resampling
-        if audio.numel() == 0:
-             # Return a silent segment or handle as appropriate
-             print("Warning: Generated audio is empty after processing.")
-             return AudioSegment.silent(duration=start_silence_duration + end_silence_duration)
-
+      
         audio = audio / max(audio.abs().max(), 1e-6)
-
 
         # Convert to 16-bit PCM
         audio_np = (audio.cpu().numpy() * 32767).astype("int16")
@@ -226,12 +217,23 @@ class TTS:
             sample_width=2,
             channels=1,
         )
-
+        
         # Add silence padding and fade-in/out
         start_silence = AudioSegment.silent(duration=start_silence_duration)
         end_silence = AudioSegment.silent(duration=end_silence_duration)
         audio_segment = start_silence + audio_segment + end_silence
         audio_segment = audio_segment.fade_in(fade_duration).fade_out(fade_duration)
+
+        if replace_context:
+            new_segment = Segment(text=prompt, speaker=speaker, audio=audio.clone().cpu())
+            self.context_segments[-1] = new_segment
+            logger.debug(f"Replaced last context segment with: '{prompt[:50]}...' ({len(audio)/self.generator.sample_rate:.2f}s)")
+        else:
+            # This case shouldn't happen if _prepare_context ran, but good to check
+            logger.warning("Context is empty, cannot replace last segment.")
+      
+        # Normalize audio
+        audio = audio.to(torch.float32)
 
         return audio_segment
 
@@ -426,7 +428,7 @@ class TTS:
             seg = None
             while retries <= max_retries:
                 try:
-                    print(f"Export: Generating audio for sentence: {sentence} (Attempt {retries + 1})")
+                    print(f"Export: Generating: {sentence} (Attempt {retries + 1})")
                     seg = self.generate_audio_segment(sentence, temperature=temperature, topk=topk)
                     break
                 except Exception as e:
