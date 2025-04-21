@@ -4,7 +4,7 @@ import os
 import time
 
 from ask_llm.core import AskLLM
-from ask_llm.utils.config import global_config as llm_config
+from ask_llm.utils.config import config as llm_config
 from ask_llm.model_manager import ModelManager
 from .tts_base import TTSBaseApp
 
@@ -37,7 +37,7 @@ class WebAppBase(TTSBaseApp, abc.ABC):
                 )
                 raise
 
-        self.available_models = llm_config.MODEL_OPTIONS
+        self.available_models = llm_config.get_model_options()
         self.current_model = self.current_resolved_alias
         super().__init__(voice=voice)
 

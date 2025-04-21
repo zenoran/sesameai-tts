@@ -9,7 +9,7 @@ import time
 import gradio as gr
 import numpy as np
 
-from ask_llm.utils.config import global_config as llm_config
+from ask_llm.utils.config import config as llm_config
 from utils.web_base import WebAppBase
 
 logger = logging.getLogger(__name__)
@@ -30,6 +30,10 @@ class StorytellerApp(WebAppBase):
         self.prompt_audio_segments = [] # List of lists: [[seg1, seg2], [seg3], ...]
         self.generated_prompt_wav_paths = []
         self.generated_full_story_paths = []
+    
+        # Ensure history manager exists
+        if not hasattr(self.llm, 'history_manager'):
+            raise ValueError("LLM object does not have a required 'history_manager' attribute.")
     
     def _store_audio_segment(self, audio_segment, sentence_index):
         """Store the generated audio segment in the prompt_audio_segments list structure."""
@@ -193,10 +197,12 @@ class StorytellerApp(WebAppBase):
         
         yield self.current_status, start_idx_of_new, end_idx_of_new, True, initial_audio_to_send, self.generated_prompt_wav_paths
     
-    def _clear_internal_state(self):
+    def _clear_internal_state(self, clear_history: bool = True):
         """Internal method to clear state without returning UI values."""
-        print("Clearing internal session state...")
-        self.llm.history_manager.clear_history()
+        print(f"Clearing internal session state... clear_history: {clear_history}")
+        if clear_history:
+            logger.debug("Clearing history...")
+            self.llm.history_manager.clear_history()
         with self.lock:
             self.sentences = []
             self.current_sentence = ""
@@ -349,6 +355,70 @@ class StorytellerApp(WebAppBase):
                      print(f"Error removing partial file {output_path}: {rm_err}")
             yield list(self.generated_full_story_paths), self.current_status
 
+    def load_recent_history(self):
+        """Loads history from the last 30 minutes, updates UI and internal state (text only)."""
+        print("Attempting to load recent history...")
+        self._clear_internal_state(clear_history=False) # Clear current state first
+        self.current_status = "Loading recent history..."
+
+        try:
+            # Retrieve history (assuming it returns list of {'role': 'user'/'assistant', 'content': ...})
+            raw_history = self.llm.load_history(since_minutes=30)
+
+            if not raw_history or len(raw_history) < 2:
+                self.current_status = "No recent history found within the last 30 minutes."
+                yield ([], self.current_status, 0, False, None, [], [], "", "")
+                return
+            print(f"Retrieved {len(raw_history)} messages from the last 30 minutes.")
+
+            # Format for Gradio Chatbot: [(user, assistant), (user, assistant), ...]
+            chatbot_history = []
+            loaded_sentences = []
+            loaded_prompt_segments = []
+
+            # Iterate in pairs (user, assistant)
+            for i in range(0, len(raw_history) - 1, 2):
+                user_msg = raw_history[i]
+                assistant_msg = raw_history[i+1]
+
+                if user_msg['role'] == 'user' and assistant_msg['role'] == 'assistant':
+                    user_content = user_msg['content']
+                    assistant_content = assistant_msg['content']
+                    chatbot_history.append((user_content, assistant_content))
+                    
+                    # Process assistant content for internal state
+                    sentences_from_assistant = self.split_text_into_sentences(assistant_content)
+                    loaded_sentences.extend(sentences_from_assistant)
+                    loaded_prompt_segments.append([]) # Add empty segment list for this interaction
+                    print(f"  Loaded interaction: User '{user_content[:50]}...', Assistant '{assistant_content[:50]}...' ({len(sentences_from_assistant)} sentences)")
+                else:
+                     print(f"Skipping unexpected message sequence at index {i}: {user_msg.get('role')}, {assistant_msg.get('role')}")
+
+
+            # Update internal state under lock
+            with self.lock:
+                self.sentences = loaded_sentences
+                self.prompt_audio_segments = loaded_prompt_segments
+                # Keep generated paths empty as we didn't load audio
+                self.generated_prompt_wav_paths = [] 
+                self.generated_full_story_paths = []
+
+            num_interactions = len(chatbot_history)
+            total_loaded_sentences = len(loaded_sentences)
+            self.current_status = f"Loaded {num_interactions} interactions ({total_loaded_sentences} sentences) from recent history. Ready to continue."
+            print(self.current_status)
+
+            # Final update to UI
+            yield (chatbot_history, self.current_status, 0, False, None, [], [], "", "")
+
+        except Exception as e:
+            error_msg = f"Error loading history: {e}"
+            print(error_msg)
+            logger.exception("Error during history loading")
+            self.current_status = error_msg
+            # Return cleared state on error
+            yield ([], self.current_status, 0, False, None, [], [], "", "")
+
 
 # --- Gradio UI ---
 def main():
@@ -388,6 +458,7 @@ def main():
         with gr.Row():
             status_output = gr.Textbox(label="Status", lines=1, interactive=False, value=storyteller.current_status, scale=8)
             reset_btn = gr.Button("Reset Session", variant="stop", scale=1, min_width=150)
+            load_history_btn = gr.Button("Load Recent History", scale=1, min_width=150)
 
         with gr.Row():
              voice_selector = gr.Radio(
@@ -650,6 +721,25 @@ def main():
             fn=storyteller.generate_and_save_full_story,
             inputs=[], # No inputs needed, uses internal state
             outputs=[full_story_download_output, status_output] # Output file path list and status
+        )
+
+        # Load History Button Handler
+        load_history_outputs = [
+            chatbot, 
+            status_output, 
+            sentence_index_to_process, 
+            processing_active, 
+            streaming_audio_output, 
+            generated_files_output, 
+            full_story_download_output,
+            query_input, # Clear query input
+            pasted_text_input # Clear pasted text input
+        ]
+
+        load_history_btn.click(
+            fn=storyteller.load_recent_history, 
+            inputs=[],
+            outputs=load_history_outputs
         )
     
     # Clean up old temp files on start

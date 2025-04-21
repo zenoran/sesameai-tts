@@ -6,7 +6,7 @@ import sys
 import gradio as gr
 
 from ask_llm.core import AskLLM
-from ask_llm.utils.config import global_config as llm_config
+from ask_llm.utils.config import config as llm_config
 from utils.tts_base import DEFAULT_VOICE
 from utils.web_base import WebAppBase
 
@@ -174,9 +174,9 @@ class ChatApp(WebAppBase):
                 None,
             )
 
-    def clear_session(self):
+    def clear_session(self, clear_history: bool = True):
         print("Clearing ChatApp session...")
-        if hasattr(self, "llm") and hasattr(self.llm, "history_manager"):
+        if clear_history and hasattr(self, "llm") and hasattr(self.llm, "history_manager"):
             self.llm.history_manager.clear_history()
             print("LLM history cleared.")
 
@@ -184,12 +184,51 @@ class ChatApp(WebAppBase):
 
         super().clear_session()
 
-        status_update = f"Session cleared. Ready. (Model: {self.current_model}, Voice: {self.current_voice})"
+        if clear_history:
+            status_update = f"Session cleared. Ready. (Model: {self.current_model}, Voice: {self.current_voice})"
+        else:
+            # Don't change status if just clearing UI for history load
+            status_update = self.current_status
 
         chatbot_val, audio_val = (
             self.clear_ui()
         )  # Get UI component updates from clear_ui
         return chatbot_val, self.update_status(status_update), audio_val, 0, False
+
+    def load_recent_history(self):
+        """Loads LLM history from the last 30 minutes and updates the UI."""
+        print("Attempting to load recent history for web_chat...")
+        # Clear UI and internal state *without* clearing LLM history
+        chatbot_val, status_update, audio_val, sent_idx, proc_active = self.clear_session(clear_history=False)
+        self.current_status = "Loading recent history..."
+        yield (chatbot_val, self.update_status(self.current_status), audio_val, sent_idx, proc_active)
+
+        try:
+            # Use the same history loading method as storyteller
+            raw_history = self.llm.load_history(since_minutes=30)
+            print(f"Retrieved {len(raw_history)} messages from the last 30 minutes.")
+
+            if not raw_history:
+                self.current_status = "No recent history found within the last 30 minutes."
+                yield ([], self.update_status(self.current_status), None, 0, False)
+                return
+
+            # web_chat uses list of dicts directly for ui_messages
+            self.ui_messages = raw_history
+            num_messages = len(self.ui_messages)
+            self.current_status = f"Loaded {num_messages} messages from recent history. Ready."
+            print(self.current_status)
+
+            # Yield final state update for UI
+            yield (self.ui_messages, self.update_status(self.current_status), None, 0, False)
+
+        except Exception as e:
+            error_msg = f"Error loading history: {e}"
+            print(error_msg)
+            logger.exception("Error during history loading in web_chat")
+            self.current_status = error_msg
+            # Return cleared state on error
+            yield ([], self.update_status(self.current_status), None, 0, False)
 
     def update_system_prompt(self, new_system_prompt):
         print(f"Updating system prompt to: {new_system_prompt[:100]}...")
@@ -312,8 +351,9 @@ def main():
                         elem_id="chat_input",
                     )
                 with gr.Row():
-                    submit_btn = gr.Button("Send", variant="primary")
+                    submit_btn = gr.Button("Send Text", variant="primary", scale=3)
                     clear_btn = gr.Button("Clear Conversation", variant="stop")
+                    load_history_btn = gr.Button("Load Recent History", scale=1)
 
         chat_app.status_output_component = status_output
         chat_app.chatbot_component = chatbot
@@ -386,6 +426,20 @@ def main():
                 sentence_index,
                 processing_active,
             ],
+        )
+
+        # --- Load History Button Handler --- 
+        load_history_outputs = [
+            chatbot,
+            status_output,
+            audio_output,
+            sentence_index,
+            processing_active,
+        ]
+        load_history_btn.click(
+            fn=chat_app.load_recent_history, 
+            inputs=[],
+            outputs=load_history_outputs
         )
 
         model_selector.change(
