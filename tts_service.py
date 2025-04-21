@@ -46,6 +46,7 @@ class TTS:
     
     voice_name = None
     voice_data = None
+    context_segments = []
 
     def __init__(self, device: str = "cuda", model_repo: str = "sesame/csm-1b") -> None:
         """
@@ -59,8 +60,7 @@ class TTS:
         self.device = device
         self.model_repo = model_repo
         self.generator = None
-        self.cached_context_tokens = []
-        self.cached_context_masks = []
+        self.context_segments = []
         
         # Configure audio playback
         self._patch_audio_playback()
@@ -106,8 +106,7 @@ class TTS:
         if voice_name not in AVAILABLE_VOICES:
             raise ValueError(f"Voice '{voice_name}' not found. Available voices: {list(AVAILABLE_VOICES.keys())}")
 
-        self.cached_context_tokens = []
-        self.cached_context_masks = []
+        self.context_segments = []
 
         self.voice_name = voice_name
         logger.info(f"Loading voice data for: {voice_name}")
@@ -125,17 +124,12 @@ class TTS:
             raise ValueError("Model not loaded. Call load_model() first.")
             
         print(f"Preparing reference audio context for voice: {self.voice_name}...")
-        segments = [
+        # Store Segment objects directly
+        self.context_segments = [
             Segment(text=text, speaker=1, audio=self._load_audio(audio_path))
             for audio_path, text in self.voice_data.items() # Use loaded voice_data
         ]
         
-        # Cache tokenized representations for fixed context segments
-        for segment in segments:
-            logger.debug(f"Tokenizing segment: {segment.text}")
-            tokens, masks = self.generator._tokenize_segment(segment)
-            self.cached_context_tokens.append(tokens)
-            self.cached_context_masks.append(masks)
         print("Reference audio context prepared")
 
     def _load_audio(self, audio_path: str) -> torch.Tensor:
@@ -167,96 +161,6 @@ class TTS:
 
         return audio_tensor.squeeze()
 
-    def generate_with_context(
-        self, 
-        prompt: str, 
-        speaker: int = 1, 
-        max_audio_length_ms: float = 60_000, 
-        temperature: float = 0.9, 
-        topk: int = 50
-    ) -> torch.Tensor:
-        """
-        Generate audio from text using cached context.
-        
-        Args:
-            prompt: Text to synthesize
-            speaker: Speaker ID
-            max_audio_length_ms: Maximum duration in milliseconds
-            temperature: Controls how random/creative the responses are (0.1 = very predictable, 1.0 = more creative)
-            topk: How many possible words to consider for each response (lower = more focused, higher = more varied)
-            
-        Returns:
-            Audio tensor
-        """
-        self.generator._model.reset_caches()
-        with torch.inference_mode():
-            # Use mixed precision throughout the generation process
-            with torch.autocast(self.device, dtype=torch.bfloat16):
-                # Tokenize the new prompt
-                gen_tokens, gen_masks = self.generator._tokenize_text_segment(prompt, speaker)
-                # Combine cached tokens with new prompt tokens
-                prompt_tokens = (
-                    torch.cat(self.cached_context_tokens + [gen_tokens], dim=0)
-                    .long()
-                    .to(self.device)
-                )
-                prompt_tokens_mask = (
-                    torch.cat(self.cached_context_masks + [gen_masks], dim=0)
-                    .bool()
-                    .to(self.device)
-                )
-
-                samples = []
-                curr_tokens = prompt_tokens.unsqueeze(0)
-                curr_tokens_mask = prompt_tokens_mask.unsqueeze(0)
-                curr_pos = (
-                    torch.arange(0, prompt_tokens.size(0))
-                    .unsqueeze(0)
-                    .long()
-                    .to(self.device)
-                )
-
-                max_audio_frames = int(max_audio_length_ms / 80)
-                max_seq_len = 2048 - max_audio_frames
-                if curr_tokens.size(1) >= max_seq_len:
-                    raise ValueError(f"Input too long ({curr_tokens.size(1)} tokens). Maximum is {max_seq_len} tokens.")
-
-                for _ in range(max_audio_frames):
-                    sample = self.generator._model.generate_frame(
-                        curr_tokens, curr_tokens_mask, curr_pos, temperature, topk
-                    )
-                    if torch.all(sample == 0):
-                        break
-                    samples.append(sample)
-                    curr_tokens = torch.cat(
-                        [sample, torch.zeros(1, 1).long().to(self.device)], dim=1
-                    ).unsqueeze(1)
-                    curr_tokens_mask = torch.cat(
-                        [
-                            torch.ones_like(sample).bool(),
-                            torch.zeros(1, 1).bool().to(self.device),
-                        ],
-                        dim=1,
-                    ).unsqueeze(1)
-                    curr_pos = curr_pos[:, -1:] + 1
-
-            # Decode audio from tokens
-            audio = (
-                self.generator._audio_tokenizer.decode(torch.stack(samples).permute(1, 2, 0))
-                .squeeze(0)
-                .squeeze(0)
-            )
-
-            # Apply watermarking
-            audio, wm_sample_rate = watermark(
-                self.watermarker, audio, self.generator.sample_rate, CSM_1B_GH_WATERMARK
-            )
-            audio = torchaudio.functional.resample(
-                audio, orig_freq=wm_sample_rate, new_freq=self.generator.sample_rate
-            )
-
-        return audio
-
     def generate_audio_segment(
         self, 
         prompt: str, 
@@ -283,14 +187,36 @@ class TTS:
             AudioSegment with the generated audio
         """
         
-        # Generate raw audio
-        audio = self.generate_with_context(prompt, speaker=speaker, max_audio_length_ms=30_000, temperature=temperature, topk=topk)
+        # Generate raw audio using the generator's generate method
+        audio = self.generator.generate(
+            text=prompt,
+            speaker=speaker,
+            context=self.context_segments,  # Pass the prepared context segments
+            max_audio_length_ms=30_000,      # TODO: Consider making this configurable?
+            temperature=temperature,
+            topk=topk
+        )
 
+        # Apply watermarking (moved from the old generate_with_context)
+        audio, wm_sample_rate = watermark(
+            self.watermarker, audio, self.generator.sample_rate, CSM_1B_GH_WATERMARK
+        )
+        audio = torchaudio.functional.resample(
+            audio, orig_freq=wm_sample_rate, new_freq=self.generator.sample_rate
+        )
+        
         # Normalize audio
         audio = audio.to(torch.float32)
         if audio.dim() > 1:
             audio = audio.squeeze()
+        # Handle potential empty audio tensor after watermarking/resampling
+        if audio.numel() == 0:
+             # Return a silent segment or handle as appropriate
+             print("Warning: Generated audio is empty after processing.")
+             return AudioSegment.silent(duration=start_silence_duration + end_silence_duration)
+
         audio = audio / max(audio.abs().max(), 1e-6)
+
 
         # Convert to 16-bit PCM
         audio_np = (audio.cpu().numpy() * 32767).astype("int16")
@@ -308,9 +234,6 @@ class TTS:
         audio_segment = audio_segment.fade_in(fade_duration).fade_out(fade_duration)
 
         return audio_segment
-
-    def _generate_audio_segment_wrapper(self, sentence, fade_duration, start_silence_duration, end_silence_duration, temperature=0.8, topk=40):
-        return self.generate_audio_segment(sentence, fade_duration, start_silence_duration, end_silence_duration, temperature, topk)
 
     def say(
         self, 
