@@ -177,9 +177,9 @@ class TTS:
         fade_duration: int = 50, 
         start_silence_duration: int = 500, 
         end_silence_duration: int = 100,
-        temperature: float = 0.8,
+        temperature: float = 1,
         topk: int = 40,
-        replace_context: bool = True
+        replace_context: bool = False
     ) -> AudioSegment:
         """
         Generate an AudioSegment from text with proper silence padding and fading.
