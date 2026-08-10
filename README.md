@@ -1,3 +1,5 @@
+
+
 # SesameAI Text-to-Speech Runner
 
 This script provides a command-line interface for interacting with the SesameAI Text-to-Speech model, allowing users to generate high-quality speech from text input.
@@ -15,8 +17,8 @@ This script provides a command-line interface for interacting with the SesameAI 
 
 1.  **Clone the repository:**
     ```bash
-    git clone git@github.com:zenoran/sesame-tts.git
-    cd sesame-tts
+    git clone git@github.com:zenoran/sesameai-tts.git
+    cd sesameai-tts
     ```
 
 2.  **Create and activate a virtual environment (recommended):**
